@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Danny Times</title>
+  <rect width="512" height="512" rx="92" fill="#f5f7f2"/>
+  <rect x="58" y="122" width="122" height="154" rx="24" fill="#17342e"/>
+  <rect x="195" y="122" width="122" height="154" rx="24" fill="#efb643"/>
+  <rect x="332" y="122" width="122" height="154" rx="24" fill="#d75c4b"/>
+  <text x="119" y="227" fill="#ffffff" font-family="Arial, sans-serif" font-size="92" font-weight="700" text-anchor="middle">2</text>
+  <text x="256" y="225" fill="#6e4a05" font-family="Arial, sans-serif" font-size="86" font-weight="700" text-anchor="middle">×</text>
+  <text x="393" y="227" fill="#ffffff" font-family="Arial, sans-serif" font-size="92" font-weight="700" text-anchor="middle">5</text>
+  <g fill="#188777">
+    <circle cx="133" cy="350" r="18"/><circle cx="194" cy="350" r="18"/><circle cx="256" cy="350" r="18"/><circle cx="318" cy="350" r="18"/><circle cx="379" cy="350" r="18"/>
+    <circle cx="133" cy="411" r="18"/><circle cx="194" cy="411" r="18"/><circle cx="256" cy="411" r="18"/><circle cx="318" cy="411" r="18"/><circle cx="379" cy="411" r="18"/>
+  </g>
+</svg>
