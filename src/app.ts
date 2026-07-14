@@ -1,6 +1,8 @@
 import { playAnswerSound } from './core/audio';
 import {
   ALL_TABLES,
+  BEYOND_CORE_TABLES,
+  CORE_TABLES,
   explanationForFact,
   factsForTables,
   parseFactKey,
@@ -218,6 +220,9 @@ export class App {
       case 'toggle-table':
         this.toggleTable(Number(target.dataset.table), target.dataset.context ?? 'settings');
         break;
+      case 'set-table-group':
+        this.setTableGroup(target.dataset.group ?? 'all', target.dataset.context ?? 'settings');
+        break;
       case 'set-practice-target':
         this.setPracticeTarget(target.dataset.value ?? '20');
         break;
@@ -374,7 +379,9 @@ export class App {
           <p class="eyebrow">Today</p>
           <h1>Ready, Daniel?</h1>
           <div class="active-table-row" aria-label="Active tables">
-            ${this.data.settings.activeTables.map((table) => `<span>${table}</span>`).join('')}
+            ${this.data.settings.activeTables.length === ALL_TABLES.length
+              ? '<span class="wide-table-badge">1–12</span>'
+              : this.data.settings.activeTables.map((table) => `<span>${table}</span>`).join('')}
           </div>
         </section>
 
@@ -767,13 +774,25 @@ export class App {
           <label class="secondary-button file-button">${icon('upload')} Import backup<input type="file" accept="application/json,.json" data-action="import-file" /></label>
         </div>
         <button class="danger-button" type="button" data-action="ask-reset">${icon('trash-2')} Reset all progress</button>
-        <p class="storage-note">Version 1 · saved automatically on this device</p>
+        <p class="storage-note">Version ${this.data.version} · saved automatically on this device</p>
       </section>
     `;
   }
 
   private renderTableSelector(selected: number[], context: string): string {
+    const groups = [
+      { id: 'core', label: 'Core', detail: '2, 3, 5, 10', tables: CORE_TABLES },
+      { id: 'beyond', label: 'Beyond core', detail: 'the other 8', tables: BEYOND_CORE_TABLES },
+      { id: 'all', label: 'All 1–12', detail: 'every table', tables: ALL_TABLES },
+    ];
     return `
+      <div class="table-quick-sets" aria-label="Quick table choices">
+        ${groups.map((group) => `
+          <button type="button" class="${this.sameTableSelection(selected, group.tables) ? 'active' : ''}" data-action="set-table-group" data-context="${context}" data-group="${group.id}">
+            <strong>${group.label}</strong><small>${group.detail}</small>
+          </button>
+        `).join('')}
+      </div>
       <div class="table-selector" aria-label="Times tables">
         ${ALL_TABLES.map((table) => `
           <button type="button" class="${selected.includes(table) ? 'active' : ''}" data-action="toggle-table" data-context="${context}" data-table="${table}" aria-pressed="${selected.includes(table)}">${table}</button>
@@ -1351,6 +1370,22 @@ export class App {
     this.render();
   }
 
+  private setTableGroup(group: string, context: string): void {
+    const tables = group === 'core'
+      ? [...CORE_TABLES]
+      : group === 'beyond'
+        ? [...BEYOND_CORE_TABLES]
+        : [...ALL_TABLES];
+    if (context === 'test') {
+      this.draftTest.tables = tables;
+    } else {
+      this.data.settings.activeTables = tables;
+      if (!tables.includes(this.progressTable)) this.progressTable = tables[0];
+      this.persist();
+    }
+    this.render();
+  }
+
   private setPracticeTarget(value: string): void {
     this.data.settings.practiceTarget = value === 'open' ? null : Number(value) as 10 | 20 | 30;
     this.persist();
@@ -1433,6 +1468,10 @@ export class App {
     };
     const total = factsForTables([table]).reduce((sum, fact) => sum + weights[memoryLabel(this.data.facts[fact.key])], 0);
     return Math.round(total / 12 * 100);
+  }
+
+  private sameTableSelection(first: number[], second: number[]): boolean {
+    return first.length === second.length && second.every((table) => first.includes(table));
   }
 
   private formatStability(hours: number): string {

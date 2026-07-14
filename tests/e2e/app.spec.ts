@@ -84,6 +84,28 @@ test('practice requires a correction and saves the mistake immediately', async (
   await expect(page.getByText('That’s it')).not.toBeVisible();
 });
 
+test('a grown-up can configure core, beyond-core, or all tables in one tap', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.active-table-row')).toContainText('1–12');
+  await page.getByRole('button', { name: 'Grown-up area' }).click();
+  await page.getByRole('button', { name: 'Press and hold' }).focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('button', { name: 'Settings' }).click();
+
+  await page.getByRole('button', { name: /Beyond core/ }).click();
+  await expect(page.locator('.table-selector button.active')).toHaveCount(8);
+  let activeTables = await page.evaluate(() => JSON.parse(localStorage.getItem('danny-times-tables:data')!).settings.activeTables);
+  expect(activeTables).toEqual([1, 4, 6, 7, 8, 9, 11, 12]);
+
+  await page.getByRole('button', { name: /Core/ }).click();
+  await expect(page.locator('.table-selector button.active')).toHaveCount(4);
+
+  await page.getByRole('button', { name: /All 1–12/ }).click();
+  await expect(page.locator('.table-selector button.active')).toHaveCount(12);
+  activeTables = await page.evaluate(() => JSON.parse(localStorage.getItem('danny-times-tables:data')!).settings.activeTables);
+  expect(activeTables).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+});
+
 test('an in-progress strict test resumes after reload and can only be abandoned explicitly', async ({ page }) => {
   await page.goto('/');
   await openParentTests(page);

@@ -107,7 +107,7 @@ export interface Settings {
 }
 
 export interface AppData {
-  version: 1;
+  version: 2;
   settings: Settings;
   facts: Record<string, FactProgress>;
   practiceHistory: PracticeSessionSummary[];

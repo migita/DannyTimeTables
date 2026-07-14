@@ -1,7 +1,8 @@
 import type { FactKey } from './types';
 
 export const ALL_TABLES = Array.from({ length: 12 }, (_, index) => index + 1);
-export const INITIAL_TABLES = [2, 3, 5, 10];
+export const CORE_TABLES = [2, 3, 5, 10];
+export const BEYOND_CORE_TABLES = ALL_TABLES.filter((table) => !CORE_TABLES.includes(table));
 export const MULTIPLIERS = Array.from({ length: 12 }, (_, index) => index + 1);
 
 export interface FactDescriptor {

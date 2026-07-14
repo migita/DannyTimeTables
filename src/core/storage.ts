@@ -1,8 +1,8 @@
-import { INITIAL_TABLES } from './facts';
+import { ALL_TABLES, CORE_TABLES } from './facts';
 import type { AppData, FactProgress, TestConfig } from './types';
 
 export const STORAGE_KEY = 'danny-times-tables:data';
-export const DATA_VERSION = 1;
+export const DATA_VERSION = 2;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -12,7 +12,7 @@ export interface StorageLike {
 
 export function defaultTestConfig(): TestConfig {
   return {
-    tables: [...INITIAL_TABLES],
+    tables: [...CORE_TABLES],
     questionCount: 50,
     passMode: 'count',
     passValue: 48,
@@ -24,7 +24,7 @@ export function createDefaultData(): AppData {
   return {
     version: DATA_VERSION,
     settings: {
-      activeTables: [...INITIAL_TABLES],
+      activeTables: [...ALL_TABLES],
       practiceTarget: 20,
       soundEnabled: false,
     },
@@ -85,6 +85,9 @@ function normaliseData(value: unknown): AppData {
   const defaults = createDefaultData();
   const settings = isRecord(value.settings) ? value.settings : {};
   const activeTables = numberArray(settings.activeTables).filter(validTable);
+  const migratedActiveTables = version === 1 && sameTables(activeTables, CORE_TABLES)
+    ? [...ALL_TABLES]
+    : activeTables;
   const practiceTarget = settings.practiceTarget === null || [10, 20, 30].includes(Number(settings.practiceTarget))
     ? settings.practiceTarget as 10 | 20 | 30 | null
     : defaults.settings.practiceTarget;
@@ -95,7 +98,9 @@ function normaliseData(value: unknown): AppData {
   return {
     version: DATA_VERSION,
     settings: {
-      activeTables: activeTables.length ? [...new Set(activeTables)].sort((a, b) => a - b) : defaults.settings.activeTables,
+      activeTables: migratedActiveTables.length
+        ? [...new Set(migratedActiveTables)].sort((a, b) => a - b)
+        : defaults.settings.activeTables,
       practiceTarget,
       soundEnabled: typeof settings.soundEnabled === 'boolean' ? settings.soundEnabled : defaults.settings.soundEnabled,
     },
@@ -117,6 +122,10 @@ function numberArray(value: unknown): number[] {
 
 function validTable(value: number): boolean {
   return value >= 1 && value <= 12;
+}
+
+function sameTables(first: number[], second: number[]): boolean {
+  return first.length === second.length && second.every((table) => first.includes(table));
 }
 
 function validFact(value: unknown): value is FactProgress {
