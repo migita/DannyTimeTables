@@ -1,8 +1,9 @@
 import { ALL_TABLES, CORE_TABLES } from './facts';
-import type { AppData, FactProgress, TestConfig } from './types';
+import { MIN_FAMILY_CODE_LENGTH } from './sync';
+import type { AppData, FactProgress, SyncSettings, TestConfig } from './types';
 
 export const STORAGE_KEY = 'danny-times-tables:data';
-export const DATA_VERSION = 2;
+export const DATA_VERSION = 3;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -28,6 +29,8 @@ export function createDefaultData(): AppData {
       practiceTarget: 20,
       soundEnabled: false,
     },
+    settingsUpdatedAt: 0,
+    sync: null,
     facts: {},
     practiceHistory: [],
     testHistory: [],
@@ -104,11 +107,25 @@ function normaliseData(value: unknown): AppData {
       practiceTarget,
       soundEnabled: typeof settings.soundEnabled === 'boolean' ? settings.soundEnabled : defaults.settings.soundEnabled,
     },
+    settingsUpdatedAt: Number.isFinite(Number(value.settingsUpdatedAt)) && Number(value.settingsUpdatedAt) > 0
+      ? Number(value.settingsUpdatedAt)
+      : 0,
+    sync: normaliseSync(value.sync),
     facts,
     practiceHistory: Array.isArray(value.practiceHistory) ? value.practiceHistory.slice(-100) as AppData['practiceHistory'] : [],
     testHistory: Array.isArray(value.testHistory) ? value.testHistory.slice(-100) as AppData['testHistory'] : [],
     presets: Array.isArray(value.presets) && value.presets.length ? value.presets as AppData['presets'] : defaults.presets,
     activeTest: isRecord(value.activeTest) ? value.activeTest as unknown as AppData['activeTest'] : null,
+  };
+}
+
+function normaliseSync(value: unknown): SyncSettings | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.familyCode !== 'string' || value.familyCode.trim().length < MIN_FAMILY_CODE_LENGTH) return null;
+  const lastSyncedAt = Number(value.lastSyncedAt);
+  return {
+    familyCode: value.familyCode.trim(),
+    lastSyncedAt: Number.isFinite(lastSyncedAt) && lastSyncedAt > 0 ? lastSyncedAt : null,
   };
 }
 

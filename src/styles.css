@@ -1550,6 +1550,67 @@ p {
   font-size: 0.68rem;
 }
 
+.sync-copy {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.sync-enable-row {
+  display: flex;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.sync-enable-row .primary-button {
+  flex: 0 0 auto;
+}
+
+.family-code-input {
+  min-width: 0;
+  flex: 1;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.sync-status svg {
+  flex: 0 0 auto;
+}
+
+.sync-state-ok {
+  color: var(--practice-dark);
+}
+
+.sync-state-error,
+.sync-state-offline {
+  color: var(--test-dark);
+}
+
+.sync-state-syncing svg {
+  animation: sync-spin 900ms linear infinite;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .result-shell {
   min-height: 100dvh;
   background: var(--surface);

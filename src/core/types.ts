@@ -106,9 +106,16 @@ export interface Settings {
   soundEnabled: boolean;
 }
 
+export interface SyncSettings {
+  familyCode: string;
+  lastSyncedAt: number | null;
+}
+
 export interface AppData {
-  version: 2;
+  version: 3;
   settings: Settings;
+  settingsUpdatedAt: number;
+  sync: SyncSettings | null;
   facts: Record<string, FactProgress>;
   practiceHistory: PracticeSessionSummary[];
   testHistory: TestResult[];

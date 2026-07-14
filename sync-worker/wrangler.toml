@@ -1,0 +1,8 @@
+name = "danny-times-sync"
+main = "src/worker.ts"
+compatibility_date = "2026-07-01"
+account_id = "8ede192ce7aa337a6da438a4a01d8c9b"
+
+kv_namespaces = [
+  { binding = "SYNC_KV", id = "dc365b9e8aff4dc59ab3802429afad95" }
+]

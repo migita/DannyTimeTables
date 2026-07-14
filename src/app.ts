@@ -25,6 +25,15 @@ import {
   saveData,
 } from './core/storage';
 import {
+  MIN_FAMILY_CODE_LENGTH,
+  SyncClient,
+  SyncError,
+  applyPayload,
+  mergePayloads,
+  samePayload,
+  toPayload,
+} from './core/sync';
+import {
   abandonTest,
   answerTest,
   createSeed,
@@ -107,6 +116,10 @@ export class App {
   private holdTimer: number | null = null;
   private transitionTimer: number | null = null;
   private toastTimer: number | null = null;
+  private syncStatus: 'idle' | 'syncing' | 'ok' | 'offline' | 'error' = 'idle';
+  private syncBusy = false;
+  private syncQueued = false;
+  private syncDebounce: number | null = null;
 
   constructor(private readonly root: HTMLElement) {
     this.data = loadData();
@@ -124,7 +137,12 @@ export class App {
     window.addEventListener('pointerup', () => this.cancelParentHold());
     window.addEventListener('pointercancel', () => this.cancelParentHold());
     window.addEventListener('keydown', (event) => this.handleKeydown(event));
+    window.addEventListener('online', () => void this.syncNow());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this.flushPendingSync();
+    });
     this.render();
+    if (this.data.sync) void this.syncNow();
   }
 
   private render(): void {
@@ -228,9 +246,22 @@ export class App {
         break;
       case 'toggle-sound':
         this.data.settings.soundEnabled = !this.data.settings.soundEnabled;
+        this.touchSettings();
         this.persist();
         this.render();
         if (this.data.settings.soundEnabled) playAnswerSound(true);
+        break;
+      case 'enable-sync':
+        this.enableSync();
+        break;
+      case 'disable-sync':
+        this.data.sync = null;
+        this.syncStatus = 'idle';
+        this.persist();
+        this.render();
+        break;
+      case 'sync-now':
+        void this.syncNow(true);
         break;
       case 'select-progress-table':
         this.progressTable = Number(target.dataset.table);
@@ -767,6 +798,8 @@ export class App {
         </button>
       </section>
 
+      ${this.renderSyncSection()}
+
       <section class="parent-section data-section">
         <div class="section-heading"><div><p class="eyebrow">Local data</p><h2>Backup and reset</h2></div></div>
         <div class="data-actions">
@@ -777,6 +810,39 @@ export class App {
         <p class="storage-note">Version ${this.data.version} · saved automatically on this device</p>
       </section>
     `;
+  }
+
+  private renderSyncSection(): string {
+    if (!this.data.sync) {
+      return `
+        <section class="parent-section sync-section">
+          <div class="section-heading"><div><p class="eyebrow">Family sync</p><h2>Share progress</h2></div></div>
+          <p class="sync-copy">Enter the family code once on each device to keep progress, history and settings in step.</p>
+          <div class="sync-enable-row">
+            <input type="text" id="family-code-input" class="family-code-input" placeholder="Family code" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Family code" />
+            <button class="primary-button" type="button" data-action="enable-sync">${icon('refresh-cw')} Turn on</button>
+          </div>
+        </section>
+      `;
+    }
+    return `
+      <section class="parent-section sync-section">
+        <div class="section-heading"><div><p class="eyebrow">Family sync</p><h2>Share progress</h2></div></div>
+        <p class="sync-status sync-state-${this.syncStatus}" role="status">${icon(this.syncStatus === 'ok' || this.syncStatus === 'idle' ? 'check' : 'refresh-cw')} ${escapeHtml(this.syncStatusLine())}</p>
+        <div class="data-actions">
+          <button class="secondary-button" type="button" data-action="sync-now">${icon('refresh-cw')} Sync now</button>
+          <button class="secondary-button" type="button" data-action="disable-sync">${icon('x')} Turn off</button>
+        </div>
+      </section>
+    `;
+  }
+
+  private syncStatusLine(): string {
+    if (this.syncStatus === 'syncing') return 'Syncing…';
+    if (this.syncStatus === 'offline') return 'Offline — will sync when back online';
+    if (this.syncStatus === 'error') return 'Sync problem — will retry';
+    const last = this.data.sync?.lastSyncedAt;
+    return last ? `Synced ${formatAgo(last)}` : 'Waiting for the first sync';
   }
 
   private renderTableSelector(selected: number[], context: string): string {
@@ -923,7 +989,7 @@ export class App {
             <span class="modal-symbol danger-symbol">${icon('trash-2')}</span>
             <p class="eyebrow">Local data</p>
             <h2 id="reset-title">Reset everything?</h2>
-            <p class="modal-copy">Progress, test history, settings and presets will be removed from this device.</p>
+            <p class="modal-copy">Progress, test history, settings and presets will be removed from this device.${this.data.sync ? ' Family sync will be turned off and the cloud copy cleared.' : ''}</p>
             <div class="modal-actions">
               <button class="danger-button" type="button" data-action="confirm-reset">Reset all</button>
               <button class="secondary-button" type="button" data-action="cancel-reset">Cancel</button>
@@ -1365,6 +1431,7 @@ export class App {
     } else {
       this.data.settings.activeTables = next;
       if (!next.includes(this.progressTable)) this.progressTable = next[0];
+      this.touchSettings();
       this.persist();
     }
     this.render();
@@ -1381,6 +1448,7 @@ export class App {
     } else {
       this.data.settings.activeTables = tables;
       if (!tables.includes(this.progressTable)) this.progressTable = tables[0];
+      this.touchSettings();
       this.persist();
     }
     this.render();
@@ -1388,6 +1456,7 @@ export class App {
 
   private setPracticeTarget(value: string): void {
     this.data.settings.practiceTarget = value === 'open' ? null : Number(value) as 10 | 20 | 30;
+    this.touchSettings();
     this.persist();
     this.render();
   }
@@ -1427,12 +1496,14 @@ export class App {
         config: { ...this.draftTest, tables: [...this.draftTest.tables] },
       },
     ];
+    this.touchSettings();
     this.persist();
     this.showToast('Preset saved');
   }
 
   private deletePreset(id: string): void {
     this.data.presets = this.data.presets.filter((preset) => preset.id !== id || preset.id === 'restaurant-test');
+    this.touchSettings();
     this.persist();
     this.render();
   }
@@ -1449,13 +1520,24 @@ export class App {
   }
 
   private confirmReset(): void {
+    const sync = this.data.sync;
+    if (this.syncDebounce !== null) {
+      window.clearTimeout(this.syncDebounce);
+      this.syncDebounce = null;
+    }
     this.data = resetData();
     this.progressTable = this.data.settings.activeTables[0];
     this.draftTest = { ...defaultTestConfig(), tables: [...this.data.settings.activeTables] };
     this.resetPrompt = false;
     this.parentTab = 'settings';
+    this.syncStatus = 'idle';
     this.persist();
     this.showToast('Progress reset');
+    if (sync) {
+      void new SyncClient(sync.familyCode).wipe().catch(() => {
+        this.showToast('Could not clear the family cloud copy');
+      });
+    }
   }
 
   private tableProgressPercent(table: number): number {
@@ -1495,6 +1577,93 @@ export class App {
 
   private persist(): void {
     saveData(this.data);
+    this.scheduleSync();
+  }
+
+  private touchSettings(): void {
+    this.data.settingsUpdatedAt = Date.now();
+  }
+
+  private scheduleSync(): void {
+    if (!this.data.sync) return;
+    if (this.syncDebounce !== null) window.clearTimeout(this.syncDebounce);
+    this.syncDebounce = window.setTimeout(() => {
+      this.syncDebounce = null;
+      void this.syncNow();
+    }, 3000);
+  }
+
+  private flushPendingSync(): void {
+    if (this.syncDebounce === null) return;
+    window.clearTimeout(this.syncDebounce);
+    this.syncDebounce = null;
+    void this.syncNow();
+  }
+
+  private enableSync(): void {
+    const input = this.root.querySelector<HTMLInputElement>('#family-code-input');
+    const code = input?.value.trim() ?? '';
+    if (code.length < MIN_FAMILY_CODE_LENGTH) {
+      this.showToast('That family code looks too short');
+      return;
+    }
+    this.data.sync = { familyCode: code, lastSyncedAt: null };
+    saveData(this.data);
+    this.render();
+    void this.syncNow(true);
+  }
+
+  private async syncNow(manual = false): Promise<void> {
+    const sync = this.data.sync;
+    if (!sync) return;
+    if (this.syncBusy) {
+      this.syncQueued = true;
+      return;
+    }
+    this.syncBusy = true;
+    this.syncStatus = 'syncing';
+    if (manual) this.render();
+
+    try {
+      const client = new SyncClient(sync.familyCode);
+      let remote = await client.pull();
+      if (remote.fromNewerApp) throw new SyncError('Update this device first: the family data comes from a newer app.');
+      let merged = remote.payload ? mergePayloads(toPayload(this.data), remote.payload) : toPayload(this.data);
+      this.data = applyPayload(this.data, merged);
+      saveData(this.data);
+
+      if (!remote.payload || !samePayload(merged, remote.payload)) {
+        let version = remote.version;
+        for (let attempt = 0; ; attempt += 1) {
+          const pushed = await client.push(merged, version);
+          if (pushed.ok) break;
+          if (!pushed.conflict || attempt >= 2) throw new SyncError('Could not save to the family cloud.');
+          remote = await client.pull();
+          if (remote.fromNewerApp) throw new SyncError('Update this device first: the family data comes from a newer app.');
+          version = remote.version;
+          merged = remote.payload ? mergePayloads(merged, remote.payload) : merged;
+          this.data = applyPayload(this.data, merged);
+          saveData(this.data);
+        }
+      }
+
+      if (this.data.sync) {
+        this.data.sync = { ...this.data.sync, lastSyncedAt: Date.now() };
+        saveData(this.data);
+      }
+      this.syncStatus = 'ok';
+      if (manual) this.showToast('Synced');
+    } catch (error) {
+      this.syncStatus = typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error';
+      if (manual) this.showToast(error instanceof SyncError ? error.message : 'Sync failed — will retry');
+    } finally {
+      this.syncBusy = false;
+      this.render();
+      if (this.syncQueued) {
+        this.syncQueued = false;
+        void this.syncNow();
+      }
+    }
   }
 
   private showToast(message: string): void {

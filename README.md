@@ -33,6 +33,23 @@ npm run test:e2e
 
 The memory model and test generator are pure TypeScript modules under [`src/core`](src/core). The browser interface is kept in [`src/app.ts`](src/app.ts), and local persistence is isolated in [`src/core/storage.ts`](src/core/storage.ts).
 
+## Family sync
+
+Progress can be kept in step across devices through a tiny Cloudflare Worker (`sync-worker/`) storing one JSON blob per family in Workers KV. Devices authenticate with a shared family code and never talk to Cloudflare directly — enter the code once per device under **Grown-ups → Settings → Family sync**.
+
+Sync is merge-based, not last-writer-wins: test and practice history union by id (a pass recorded offline can never be lost), each fact keeps whichever device reviewed it last, and settings follow the most recent explicit change. Writes use `If-Match` versioning, so concurrent devices re-pull and re-merge instead of clobbering each other. The family code and any half-finished test stay device-local.
+
+To (re)deploy the backend:
+
+```bash
+cd sync-worker
+npx wrangler login
+npx wrangler deploy
+npx wrangler secret put FAMILY_CODE   # paste a long random code; same one goes into each device
+```
+
+The endpoint URL lives in `src/core/sync.ts` (`SYNC_ENDPOINT`). Rotating the family code is `wrangler secret put FAMILY_CODE` again, then re-entering it on each device.
+
 ## Offline and installation
 
 The production build is a static PWA. Its service worker pre-caches the generated Vite bundles and install assets, then caches same-origin requests as they are used. On iPhone, open the deployed site in Safari and use **Add to Home Screen**.
