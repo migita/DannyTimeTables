@@ -139,5 +139,42 @@ test('strict test gives an unambiguous pass without revealing answers during the
 
   await expect(page.getByText('PASS', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '20 / 20 correct' })).toBeVisible();
-  await expect(page.getByText('Pass mark 20')).toBeVisible();
+  await expect(page.getByText('Pass mark 19')).toBeVisible();
+  await expect(page.getByText(/Finished \d/)).toBeVisible();
+});
+
+test('changing the question count keeps the pass mark proportional', async ({ page }) => {
+  await page.goto('/');
+  await openParentTests(page);
+
+  await expect(page.getByText('48 of 50')).toBeVisible();
+  await page.getByRole('button', { name: '20', exact: true }).click();
+  await expect(page.getByText('19 of 20')).toBeVisible();
+  await page.getByRole('button', { name: '100', exact: true }).click();
+  await expect(page.getByText('95 of 100')).toBeVisible();
+});
+
+test('test answers reach the memory model and misses can be fixed', async ({ page }) => {
+  await page.goto('/');
+  await openParentTests(page);
+  await page.getByRole('button', { name: 'Start Screen time' }).click();
+
+  const missedAnswer = await currentAnswer(page);
+  await enterNumber(page, missedAnswer + 1);
+  for (let index = 1; index < 20; index += 1) {
+    await enterNumber(page, await currentAnswer(page));
+  }
+
+  await expect(page.getByText('PASS', { exact: true })).toBeVisible();
+  const trackedFacts = await page.evaluate(() => {
+    const data = JSON.parse(localStorage.getItem('danny-times-tables:data')!);
+    return Object.keys(data.facts).length;
+  });
+  expect(trackedFacts).toBeGreaterThan(0);
+
+  await page.getByRole('button', { name: 'Fix the miss' }).click();
+  await expect(page.getByText('Fix the misses')).toBeVisible();
+  await expect(page.getByText('1 to fix')).toBeVisible();
+  await enterNumber(page, await currentAnswer(page));
+  await expect(page.getByText('Misses fixed')).toBeVisible();
 });

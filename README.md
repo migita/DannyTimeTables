@@ -28,7 +28,7 @@ npm run test:e2e
 
 - **Learn** uses groups, arrays, doubles, fives, and tens before asking for an independent answer. A guided correction never counts as mastery.
 - **Practice** targets facts near useful retrieval difficulty. Recent mistakes return after 3–5 intervening questions, while stable facts are checked less often.
-- **Just Test** generates a balanced, fixed-difficulty sequence. It hides correctness during the run, persists every answer, and records abandoned tests separately from passes and failures.
+- **Just Test** generates a balanced, fixed-difficulty sequence. It hides correctness during the run, persists every answer, and records abandoned tests separately from passes and failures. Test answers feed the memory model, the result screen shows the finish time, and missed questions can be fixed immediately in a short retype-and-recall round. A built-in "Screen time" preset (20 questions, pass 18, core tables) matches a typical school test.
 - **Grown-ups** can choose any tables from 1–12, inspect prompt-level history, save test presets, export/import a versioned backup, and reset local data.
 
 The memory model and test generator are pure TypeScript modules under [`src/core`](src/core). The browser interface is kept in [`src/app.ts`](src/app.ts), and local persistence is isolated in [`src/core/storage.ts`](src/core/storage.ts).

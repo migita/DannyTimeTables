@@ -17,6 +17,7 @@ import {
 } from './core/memory';
 import { choosePracticeFact, scheduleRetry, type ScheduledFact } from './core/scheduler';
 import {
+  BUILTIN_PRESET_IDS,
   defaultTestConfig,
   exportData,
   importData,
@@ -44,6 +45,7 @@ import {
 import type {
   ActiveTest,
   AppData,
+  AttemptSource,
   FactKey,
   MemoryLabel,
   PracticeSessionSummary,
@@ -82,6 +84,8 @@ interface PracticeState {
   phase: PracticePhase;
   questionStartedAt: number;
   completed: boolean;
+  /** Non-null when fixing test misses: remaining facts, re-queued until answered independently. */
+  fixQueue: FactKey[] | null;
 }
 
 interface LearnState {
@@ -319,6 +323,11 @@ export class App {
       case 'retry-test':
         if (this.latestResult) this.startTest(this.latestResult.config, this.latestResult.presetName);
         break;
+      case 'fix-misses': {
+        const result = this.latestResult ?? this.data.testHistory.at(-1);
+        if (result) this.startFixMisses(result);
+        break;
+      }
       case 'export-data':
         this.downloadBackup();
         break;
@@ -434,6 +443,18 @@ export class App {
           </button>
         </section>
 
+        <section class="home-tables" aria-label="Your tables">
+          ${this.data.settings.activeTables.map((table) => {
+            const percent = this.tableProgressPercent(table);
+            return `
+              <div class="home-table">
+                <span>${table}×</span>
+                <i aria-label="${table} times table ${percent}% learned"><b style="width:${percent}%"></b></i>
+              </div>
+            `;
+          }).join('')}
+        </section>
+
         <section class="home-progress" aria-label="Learning progress">
           <div><strong>${growing}</strong><span>growing</span></div>
           <div><strong>${labelCounts.Secure}</strong><span>secure</span></div>
@@ -511,18 +532,23 @@ export class App {
     const state = this.practice;
     const fact = state.current;
 
+    const fixing = state.fixQueue !== null;
     if (state.phase === 'complete') {
       return `
         <main class="child-shell practice-shell complete-shell">
-          ${this.renderChildHeader('Practice', 'home')}
+          ${this.renderChildHeader(fixing ? 'Fix the misses' : 'Practice', 'home')}
           <section class="session-complete complete-right">
             <span class="result-symbol">${icon('check')}</span>
-            <p class="eyebrow">Set complete</p>
+            <p class="eyebrow">${fixing ? 'Misses fixed' : 'Set complete'}</p>
             <h1>${state.correct} of ${state.answered}</h1>
             <p class="complete-note">answered first time</p>
             <div class="complete-actions">
-              <button class="primary-button practice-button" type="button" data-action="start-practice">${icon('play')} Another set</button>
-              <button class="secondary-button" type="button" data-action="home">${icon('home')} Home</button>
+              ${fixing
+                ? `<button class="primary-button practice-button" type="button" data-action="home">${icon('home')} Home</button>`
+                : `
+                  <button class="primary-button practice-button" type="button" data-action="start-practice">${icon('play')} Another set</button>
+                  <button class="secondary-button" type="button" data-action="home">${icon('home')} Home</button>
+                `}
             </div>
           </section>
         </main>
@@ -531,15 +557,20 @@ export class App {
 
     const total = state.target;
     const currentNumber = state.phase === 'answer' ? state.answered + 1 : state.answered;
-    const progress = total
-      ? `<div class="child-progress"><span>${Math.min(currentNumber, total)} / ${total}</span>${renderProgressBar(state.answered, total, 'Practice progress')}</div>`
-      : `<div class="child-progress open-progress"><span>${state.answered} done</span></div>`;
+    const remainingFixes = fixing
+      ? state.fixQueue!.length + (state.phase === 'answer' || state.phase === 'correction' ? 1 : 0)
+      : 0;
+    const progress = fixing
+      ? `<div class="child-progress open-progress"><span>${remainingFixes} to fix</span></div>`
+      : total
+        ? `<div class="child-progress"><span>${Math.min(currentNumber, total)} / ${total}</span>${renderProgressBar(state.answered, total, 'Practice progress')}</div>`
+        : `<div class="child-progress open-progress"><span>${state.answered} done</span></div>`;
     const correction = state.phase === 'correction' || state.phase === 'corrected';
     const feedback = state.phase === 'right' || state.phase === 'corrected';
 
     return `
       <main class="child-shell practice-shell question-shell">
-        ${this.renderChildHeader('Practice', 'practice-end')}
+        ${this.renderChildHeader(fixing ? 'Fix the misses' : 'Practice', 'practice-end')}
         ${progress}
         <section class="question-stage ${feedback ? 'has-feedback' : ''}">
           ${correction ? `
@@ -720,14 +751,17 @@ export class App {
       <section class="parent-section test-presets-section">
         <div class="section-heading"><div><p class="eyebrow">Quick start</p><h1>Just Test</h1></div></div>
         <div class="preset-list">
-          ${this.data.presets.map((preset) => `
+          ${this.data.presets.map((preset) => {
+            const presetIcon = preset.id === 'screen-time-test' ? 'gamepad-2' : preset.id === 'restaurant-test' ? 'utensils' : 'clipboard-check';
+            return `
             <div class="preset-row">
-              <span class="preset-icon">${preset.id === 'restaurant-test' ? icon('utensils') : icon('clipboard-check')}</span>
+              <span class="preset-icon">${icon(presetIcon)}</span>
               <p><strong>${escapeHtml(preset.name)}</strong><span>${preset.config.questionCount} questions · need ${requiredCorrect(preset.config)} · ${preset.config.tables.join(', ')}</span></p>
-              ${preset.id !== 'restaurant-test' ? `<button class="icon-button subtle-button" type="button" data-action="delete-preset" data-id="${escapeHtml(preset.id)}" aria-label="Delete ${escapeHtml(preset.name)}">${icon('trash-2')}</button>` : ''}
+              ${!BUILTIN_PRESET_IDS.includes(preset.id) ? `<button class="icon-button subtle-button" type="button" data-action="delete-preset" data-id="${escapeHtml(preset.id)}" aria-label="Delete ${escapeHtml(preset.name)}">${icon('trash-2')}</button>` : ''}
               <button class="play-button" type="button" data-action="start-preset" data-id="${escapeHtml(preset.id)}" aria-label="Start ${escapeHtml(preset.name)}">${icon('play')}</button>
             </div>
-          `).join('')}
+          `;
+          }).join('')}
         </div>
       </section>
 
@@ -910,6 +944,7 @@ export class App {
           <p class="result-word">${passed ? 'PASS' : 'NOT YET'}</p>
           <h1>${result.correct} / ${result.config.questionCount} correct</h1>
           ${passed ? `<p class="pass-line">Pass mark ${needed}</p>` : `<p class="pass-line">Pass mark: ${needed}</p>`}
+          <p class="result-time">Finished ${formatDate(result.finishedAt)}</p>
         </section>
         <section class="result-details">
           <div class="result-metrics">
@@ -927,7 +962,8 @@ export class App {
             </details>
           ` : ''}
           <div class="result-actions">
-            ${!passed ? `<button class="primary-button test-button" type="button" data-action="retry-test">${icon('rotate-ccw')} New test</button>` : ''}
+            ${missed.length ? `<button class="${passed ? 'secondary-button' : 'primary-button test-button'}" type="button" data-action="fix-misses">${icon('brain')} Fix the ${missed.length === 1 ? 'miss' : 'misses'}</button>` : ''}
+            ${!passed ? `<button class="secondary-button" type="button" data-action="retry-test">${icon('rotate-ccw')} New test</button>` : ''}
             <button class="${passed ? 'primary-button test-button' : 'secondary-button'}" type="button" data-action="home">${icon('home')} Home</button>
           </div>
         </section>
@@ -1109,6 +1145,39 @@ export class App {
       phase: 'answer',
       questionStartedAt: Date.now(),
       completed: false,
+      fixQueue: null,
+    };
+    this.screen = 'practice';
+    this.render();
+  }
+
+  private startFixMisses(result: TestResult): void {
+    this.clearTransition();
+    const missedKeys = [...new Set(result.questions
+      .filter((question) => {
+        const answer = result.answers.find((item) => item.questionId === question.id);
+        return answer && !answer.correct;
+      })
+      .map((question) => question.factKey))];
+    if (!missedKeys.length) return;
+
+    const first = parseFactKey(missedKeys[0]);
+    this.latestResult = null;
+    this.practice = {
+      id: this.makeId('practice'),
+      startedAt: Date.now(),
+      target: null,
+      answered: 0,
+      correct: 0,
+      current: { ...first, reason: 'retry' },
+      recent: [],
+      retries: [],
+      factKeys: [],
+      input: '',
+      phase: 'answer',
+      questionStartedAt: Date.now(),
+      completed: false,
+      fixQueue: missedKeys.slice(1),
     };
     this.screen = 'practice';
     this.render();
@@ -1259,7 +1328,11 @@ export class App {
         state.phase = 'right';
       } else {
         state.phase = 'correction';
-        state.retries = scheduleRetry(state.retries, descriptor.key, state.answered);
+        if (state.fixQueue !== null) {
+          state.fixQueue = [...state.fixQueue, descriptor.key];
+        } else {
+          state.retries = scheduleRetry(state.retries, descriptor.key, state.answered);
+        }
       }
       if (this.data.settings.soundEnabled) playAnswerSound(correct);
       this.persist();
@@ -1288,6 +1361,23 @@ export class App {
   private advancePractice(): void {
     if (!this.practice) return;
     const state = this.practice;
+
+    if (state.fixQueue !== null) {
+      const nextKey = state.fixQueue[0];
+      if (!nextKey) {
+        this.finishPractice();
+        this.render();
+        return;
+      }
+      state.fixQueue = state.fixQueue.slice(1);
+      state.current = { ...parseFactKey(nextKey), reason: 'retry' };
+      state.input = '';
+      state.phase = 'answer';
+      state.questionStartedAt = Date.now();
+      this.render();
+      return;
+    }
+
     if (state.target !== null && state.answered >= state.target) {
       this.finishPractice();
       this.render();
@@ -1336,7 +1426,7 @@ export class App {
     independent: boolean,
     responseMs: number,
     sessionId: string,
-    source: 'learn' | 'practice',
+    source: AttemptSource,
   ): void {
     const current = this.data.facts[descriptor.key] ?? newFactProgress(descriptor.key, descriptor.factorA, descriptor.factorB);
     this.data.facts[descriptor.key] = recordAnswer(current, {
@@ -1385,7 +1475,12 @@ export class App {
   private submitTestAnswer(answer: number): void {
     const active = this.data.activeTest;
     if (!active) return;
-    this.data.activeTest = answerTest(active, answer, Math.max(200, Date.now() - this.testQuestionStartedAt));
+    const question = active.questions[active.answers.length];
+    const responseMs = Math.max(200, Date.now() - this.testQuestionStartedAt);
+    this.data.activeTest = answerTest(active, answer, responseMs);
+    if (question) {
+      this.updateFact(parseFactKey(question.factKey), answer === question.answer, true, responseMs, active.id, 'test');
+    }
     this.testInput = '';
     if (this.data.activeTest.answers.length === this.data.activeTest.questions.length) {
       const result = finishTest(this.data.activeTest);
@@ -1463,8 +1558,13 @@ export class App {
 
   private setTestCount(count: number): void {
     if (![20, 50, 100].includes(count)) return;
+    const previousCount = this.draftTest.questionCount;
     this.draftTest.questionCount = count;
-    if (this.draftTest.passMode === 'count') this.draftTest.passValue = Math.min(this.draftTest.passValue, count);
+    if (this.draftTest.passMode === 'count' && previousCount !== count) {
+      // Keep the pass bar the same proportion rather than clamping 48/50 into
+      // a silent 20/20 perfect-score requirement.
+      this.draftTest.passValue = clamp(Math.round(this.draftTest.passValue / previousCount * count), 1, count);
+    }
     this.render();
   }
 
@@ -1502,7 +1602,7 @@ export class App {
   }
 
   private deletePreset(id: string): void {
-    this.data.presets = this.data.presets.filter((preset) => preset.id !== id || preset.id === 'restaurant-test');
+    this.data.presets = this.data.presets.filter((preset) => preset.id !== id || BUILTIN_PRESET_IDS.includes(preset.id));
     this.touchSettings();
     this.persist();
     this.render();

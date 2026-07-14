@@ -3,7 +3,8 @@ import { MIN_FAMILY_CODE_LENGTH } from './sync';
 import type { AppData, FactProgress, SyncSettings, TestConfig } from './types';
 
 export const STORAGE_KEY = 'danny-times-tables:data';
-export const DATA_VERSION = 3;
+export const DATA_VERSION = 4;
+export const BUILTIN_PRESET_IDS = ['screen-time-test', 'restaurant-test'];
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -21,6 +22,20 @@ export function defaultTestConfig(): TestConfig {
   };
 }
 
+function screenTimePreset(): AppData['presets'][number] {
+  return {
+    id: 'screen-time-test',
+    name: 'Screen time',
+    config: {
+      tables: [...CORE_TABLES],
+      questionCount: 20,
+      passMode: 'count',
+      passValue: 18,
+      includeDivision: false,
+    },
+  };
+}
+
 export function createDefaultData(): AppData {
   return {
     version: DATA_VERSION,
@@ -35,6 +50,7 @@ export function createDefaultData(): AppData {
     practiceHistory: [],
     testHistory: [],
     presets: [
+      screenTimePreset(),
       {
         id: 'restaurant-test',
         name: 'Restaurant test',
@@ -114,9 +130,20 @@ function normaliseData(value: unknown): AppData {
     facts,
     practiceHistory: Array.isArray(value.practiceHistory) ? value.practiceHistory.slice(-100) as AppData['practiceHistory'] : [],
     testHistory: Array.isArray(value.testHistory) ? value.testHistory.slice(-100) as AppData['testHistory'] : [],
-    presets: Array.isArray(value.presets) && value.presets.length ? value.presets as AppData['presets'] : defaults.presets,
+    presets: normalisePresets(value.presets, version, defaults.presets),
     activeTest: isRecord(value.activeTest) ? value.activeTest as unknown as AppData['activeTest'] : null,
   };
+}
+
+function normalisePresets(value: unknown, version: number, defaults: AppData['presets']): AppData['presets'] {
+  if (!Array.isArray(value) || !value.length) return defaults;
+  const presets = value as AppData['presets'];
+  // The Screen time preset arrived with version 4; add it once during
+  // migration, so deleting it later sticks.
+  if (version < 4 && !presets.some((preset) => preset.id === 'screen-time-test')) {
+    return [screenTimePreset(), ...presets];
+  }
+  return presets;
 }
 
 function normaliseSync(value: unknown): SyncSettings | null {

@@ -2,7 +2,7 @@ export type FactKey = `${number}x${number}`;
 
 export type MemoryLabel = 'New' | 'Learning' | 'Remembering' | 'Fast' | 'Secure';
 
-export type AttemptSource = 'learn' | 'practice';
+export type AttemptSource = 'learn' | 'practice' | 'test';
 
 export interface FactAttempt {
   at: number;
@@ -112,7 +112,7 @@ export interface SyncSettings {
 }
 
 export interface AppData {
-  version: 3;
+  version: 4;
   settings: Settings;
   settingsUpdatedAt: number;
   sync: SyncSettings | null;

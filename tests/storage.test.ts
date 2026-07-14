@@ -12,9 +12,9 @@ describe('versioned storage', () => {
     data.settings.activeTables = [3, 7];
 
     const imported = importData(exportData(data));
-    expect(imported.version).toBe(3);
+    expect(imported.version).toBe(4);
     expect(imported.settings.activeTables).toEqual([3, 7]);
-    expect(imported.presets[0].name).toBe('Restaurant test');
+    expect(imported.presets.map((preset) => preset.name)).toEqual(['Screen time', 'Restaurant test']);
   });
 
   it('migrates version 2 data without sync configuration', () => {
@@ -23,9 +23,27 @@ describe('versioned storage', () => {
     delete oldData.settingsUpdatedAt;
 
     const imported = importData(JSON.stringify(oldData));
-    expect(imported.version).toBe(3);
+    expect(imported.version).toBe(4);
     expect(imported.sync).toBeNull();
     expect(imported.settingsUpdatedAt).toBe(0);
+  });
+
+  it('adds the Screen time preset when migrating pre-version-4 data', () => {
+    const oldData = { ...createDefaultData(), version: 3 } as Record<string, unknown>;
+    oldData.presets = [{ id: 'restaurant-test', name: 'Restaurant test', config: createDefaultData().presets[1].config }];
+
+    const imported = importData(JSON.stringify(oldData));
+    expect(imported.presets.map((preset) => preset.id)).toEqual(['screen-time-test', 'restaurant-test']);
+    expect(imported.presets[0].config.questionCount).toBe(20);
+    expect(imported.presets[0].config.passValue).toBe(18);
+  });
+
+  it('respects a deliberate Screen time deletion in version 4 data', () => {
+    const data = createDefaultData();
+    data.presets = data.presets.filter((preset) => preset.id !== 'screen-time-test');
+
+    const imported = importData(exportData(data));
+    expect(imported.presets.map((preset) => preset.id)).toEqual(['restaurant-test']);
   });
 
   it('round-trips sync settings and drops codes that are too short', () => {

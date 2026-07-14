@@ -312,6 +312,43 @@ p {
   line-height: 1.1;
 }
 
+.home-tables {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 10px 14px;
+  margin-top: 24px;
+}
+
+.home-table {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.home-table span {
+  min-width: 26px;
+  font-size: 0.82rem;
+  font-weight: 850;
+  text-align: right;
+}
+
+.home-table i {
+  display: block;
+  flex: 1;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--line);
+}
+
+.home-table b {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--practice);
+  transition: width 300ms ease;
+}
+
 .home-progress {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -667,25 +704,52 @@ p {
 
 .array-visual {
   display: grid;
-  grid-template-columns: repeat(var(--columns), 13px);
-  gap: 5px;
-  padding: 12px;
+  grid-template-columns: repeat(var(--columns), var(--dot, 13px));
+  gap: var(--dot-gap, 5px);
+  padding: var(--dot-pad, 12px);
   border-left: 3px solid var(--learn);
   border-bottom: 3px solid var(--learn);
 }
 
 .array-visual b {
-  width: 13px;
-  height: 13px;
+  width: var(--dot, 13px);
+  height: var(--dot, 13px);
 }
 
+/* Compact contexts shrink the marks instead of clipping them: a counting
+   visual must always show exactly the quantity it claims. */
 .compact-visual {
+  --dot: 8px;
+  --dot-gap: 3px;
+  --dot-pad: 7px;
   display: grid;
   max-width: 100%;
-  max-height: 112px;
   place-items: center;
-  overflow: hidden;
-  transform: scale(0.75);
+}
+
+.compact-visual .pair-visual b,
+.compact-visual .group-visual b {
+  width: 9px;
+  height: 9px;
+}
+
+.compact-visual .pair-visual span,
+.compact-visual .group-visual span {
+  padding: 5px;
+  gap: 3px;
+}
+
+.compact-visual .pair-visual,
+.compact-visual .group-visual,
+.compact-visual .ten-visual,
+.compact-visual .five-track {
+  gap: 5px;
+}
+
+.compact-visual .five-track span {
+  width: 34px;
+  height: 34px;
+  font-size: 0.68rem;
 }
 
 .correction-copy,
@@ -717,7 +781,6 @@ p {
 
 .practice-correction .compact-visual {
   width: 45%;
-  max-height: 90px;
 }
 
 .answer-feedback {
@@ -1683,6 +1746,13 @@ p {
   font-weight: 750;
 }
 
+.result-time {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 .result-details {
   width: min(100%, 640px);
   margin: 0 auto;
@@ -2111,8 +2181,9 @@ p {
   }
 
   .compact-visual {
-    max-height: 68px;
-    transform: scale(0.58);
+    --dot: 5px;
+    --dot-gap: 2px;
+    --dot-pad: 5px;
   }
 }
 
