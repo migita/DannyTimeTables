@@ -378,6 +378,15 @@ p {
   border-left: 1px solid var(--line);
 }
 
+.app-version {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
 .home-progress strong {
   font-size: 1.25rem;
 }

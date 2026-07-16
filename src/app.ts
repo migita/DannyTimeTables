@@ -392,6 +392,8 @@ export class App {
           <div><strong>${labelCounts.Secure}</strong><span>secure</span></div>
           <div><strong>${finishedSessions}</strong><span>sessions</span></div>
         </section>
+
+        <p class="app-version">v${__APP_VERSION__}</p>
       </main>
     `;
   }
@@ -766,7 +768,7 @@ export class App {
           <label class="secondary-button file-button">${icon('upload')} Import backup<input type="file" accept="application/json,.json" data-action="import-file" /></label>
         </div>
         <button class="danger-button" type="button" data-action="ask-reset">${icon('trash-2')} Reset all progress</button>
-        <p class="storage-note">Version ${this.data.version} · saved automatically on this device</p>
+        <p class="storage-note">App ${__APP_VERSION__} · data v${this.data.version} · saved automatically on this device</p>
       </section>
     `;
   }
