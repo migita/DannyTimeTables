@@ -1,4 +1,4 @@
-const CACHE_NAME = 'danny-times-v2';
+const CACHE_NAME = 'danny-times-v3';
 const BASE = new URL('./', self.location.href);
 const APP_SHELL = [
   BASE.href,

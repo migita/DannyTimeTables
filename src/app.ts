@@ -15,10 +15,18 @@ import {
   recordAnswer,
   weaknessScore,
 } from './core/memory';
-import { choosePracticeFact, scheduleRetry, type ScheduledFact } from './core/scheduler';
+import { choosePracticeFact, pickWarmUpFacts, scheduleRetry, type ScheduledFact } from './core/scheduler';
 import {
-  BUILTIN_PRESET_IDS,
-  defaultTestConfig,
+  presentQuestion,
+  requiredCorrect,
+  sessionResult,
+  warmUpRetries,
+  type PresentedQuestion,
+} from './core/session';
+import {
+  QUESTION_COUNTS,
+  WARM_UP_COUNTS,
+  ensureSettings,
   exportData,
   importData,
   loadData,
@@ -34,23 +42,13 @@ import {
   samePayload,
   toPayload,
 } from './core/sync';
-import {
-  abandonTest,
-  answerTest,
-  createSeed,
-  finishTest,
-  generateTestQuestions,
-  requiredCorrect,
-} from './core/test-engine';
 import type {
-  ActiveTest,
+  ActiveSession,
   AppData,
   AttemptSource,
   FactKey,
   MemoryLabel,
-  PracticeSessionSummary,
-  RetryItem,
-  TestConfig,
+  SessionConfig,
   TestResult,
 } from './core/types';
 import {
@@ -65,38 +63,18 @@ import {
   renderProgressBar,
 } from './ui/components';
 
-type Screen = 'home' | 'learn' | 'practice' | 'parent' | 'test' | 'test-result';
-type ParentTab = 'progress' | 'tests' | 'settings';
-type PracticePhase = 'answer' | 'right' | 'correction' | 'corrected' | 'complete';
-type LearnPhase = 'explain' | 'guided' | 'guided-correction' | 'independent' | 'correction' | 'complete';
+type Screen = 'home' | 'session' | 'result' | 'parent';
+type ParentTab = 'progress' | 'settings';
+type SessionPhase = 'look' | 'try' | 'answer' | 'right' | 'correction' | 'corrected' | 'done';
 
-interface PracticeState {
-  id: string;
-  startedAt: number;
-  target: number | null;
-  answered: number;
-  correct: number;
-  current: ScheduledFact;
-  recent: FactKey[];
-  retries: RetryItem[];
-  factKeys: FactKey[];
+interface SessionView {
+  phase: SessionPhase;
+  fixing: boolean;
+  warmFact: FactDescriptor | null;
+  warmMissed: boolean;
+  current: (ScheduledFact & { presented: PresentedQuestion }) | null;
   input: string;
-  phase: PracticePhase;
   questionStartedAt: number;
-  completed: boolean;
-  /** Non-null when fixing test misses: remaining facts, re-queued until answered independently. */
-  fixQueue: FactKey[] | null;
-}
-
-interface LearnState {
-  id: string;
-  startedAt: number;
-  fact: FactDescriptor;
-  input: string;
-  phase: LearnPhase;
-  questionStartedAt: number;
-  independentCorrect: boolean;
-  completed: boolean;
 }
 
 export class App {
@@ -104,14 +82,9 @@ export class App {
   private screen: Screen;
   private parentTab: ParentTab = 'progress';
   private progressTable: number;
-  private draftTest: TestConfig;
-  private practice: PracticeState | null = null;
-  private learn: LearnState | null = null;
-  private testInput = '';
-  private testQuestionStartedAt = Date.now();
+  private session: SessionView | null = null;
   private latestResult: TestResult | null = null;
   private gateOpen = false;
-  private gateDestination: ParentTab = 'progress';
   private resumePrompt = false;
   private abandonPrompt = false;
   private resetPrompt = false;
@@ -128,12 +101,8 @@ export class App {
   constructor(private readonly root: HTMLElement) {
     this.data = loadData();
     this.progressTable = this.data.settings.activeTables[0] ?? 2;
-    this.draftTest = {
-      ...defaultTestConfig(),
-      tables: [...this.data.settings.activeTables],
-    };
-    this.screen = this.data.activeTest ? 'test' : 'home';
-    this.resumePrompt = this.data.activeTest !== null;
+    this.screen = 'home';
+    this.resumePrompt = this.data.activeSession !== null;
 
     this.root.addEventListener('click', (event) => this.handleClick(event));
     this.root.addEventListener('change', (event) => void this.handleChange(event));
@@ -153,20 +122,14 @@ export class App {
     document.body.dataset.screen = this.screen;
     let content: string;
     switch (this.screen) {
-      case 'learn':
-        content = this.renderLearn();
+      case 'session':
+        content = this.renderSession();
         break;
-      case 'practice':
-        content = this.renderPractice();
+      case 'result':
+        content = this.renderResult();
         break;
       case 'parent':
         content = this.renderParent();
-        break;
-      case 'test':
-        content = this.renderTest();
-        break;
-      case 'test-result':
-        content = this.renderTestResult();
         break;
       default:
         content = this.renderHome();
@@ -186,17 +149,12 @@ export class App {
     const action = target.dataset.action;
 
     switch (action) {
-      case 'start-learn':
-        this.startLearn();
-        break;
-      case 'start-practice':
-        this.startPractice();
-        break;
-      case 'open-test-gate':
-        this.openParentGate('tests');
+      case 'start-session':
+        this.startSession();
         break;
       case 'open-parent-gate':
-        this.openParentGate('progress');
+        this.gateOpen = true;
+        this.render();
         break;
       case 'close-gate':
         this.gateOpen = false;
@@ -208,23 +166,13 @@ export class App {
       case 'home':
         this.goHome();
         break;
-      case 'practice-end':
-        this.finishPractice();
-        this.goHome();
-        break;
-      case 'learn-try':
-        if (this.learn) {
-          this.learn.phase = 'guided';
-          this.learn.input = '';
-          this.learn.questionStartedAt = Date.now();
+      case 'warmup-try':
+        if (this.session?.phase === 'look') {
+          this.session.phase = 'try';
+          this.session.input = '';
+          this.session.questionStartedAt = Date.now();
           this.render();
         }
-        break;
-      case 'learn-another':
-        this.startLearn(this.learn?.fact.key);
-        break;
-      case 'learn-practice':
-        this.startPractice();
         break;
       case 'key':
         this.appendAnswer(target.dataset.key ?? '');
@@ -240,13 +188,28 @@ export class App {
         this.render();
         break;
       case 'toggle-table':
-        this.toggleTable(Number(target.dataset.table), target.dataset.context ?? 'settings');
+        this.toggleTable(Number(target.dataset.table));
         break;
       case 'set-table-group':
-        this.setTableGroup(target.dataset.group ?? 'all', target.dataset.context ?? 'settings');
+        this.setTableGroup(target.dataset.group ?? 'all');
         break;
-      case 'set-practice-target':
-        this.setPracticeTarget(target.dataset.value ?? '20');
+      case 'set-session-count':
+        this.setSessionCount(Number(target.dataset.value));
+        break;
+      case 'set-pass-mode':
+        this.setPassMode(target.dataset.value as SessionConfig['passMode']);
+        break;
+      case 'step-pass':
+        this.stepPass(Number(target.dataset.amount));
+        break;
+      case 'toggle-division':
+        this.data.settings.session.includeDivision = !this.data.settings.session.includeDivision;
+        this.touchSettings();
+        this.persist();
+        this.render();
+        break;
+      case 'set-warmup':
+        this.setWarmUpCount(Number(target.dataset.value));
         break;
       case 'toggle-sound':
         this.data.settings.soundEnabled = !this.data.settings.soundEnabled;
@@ -279,34 +242,8 @@ export class App {
         this.factDialogKey = null;
         this.render();
         break;
-      case 'set-test-count':
-        this.setTestCount(Number(target.dataset.value));
-        break;
-      case 'set-pass-mode':
-        this.setPassMode(target.dataset.value as TestConfig['passMode']);
-        break;
-      case 'step-pass':
-        this.stepPass(Number(target.dataset.amount));
-        break;
-      case 'toggle-division':
-        this.draftTest.includeDivision = !this.draftTest.includeDivision;
-        this.render();
-        break;
-      case 'start-custom-test':
-        this.startTest(this.draftTest, null);
-        break;
-      case 'start-preset':
-        this.startPreset(target.dataset.id ?? '');
-        break;
-      case 'save-preset':
-        this.savePreset();
-        break;
-      case 'delete-preset':
-        this.deletePreset(target.dataset.id ?? '');
-        break;
-      case 'test-exit':
-        this.abandonPrompt = true;
-        this.render();
+      case 'session-exit':
+        this.exitSession();
         break;
       case 'cancel-abandon':
         this.abandonPrompt = false;
@@ -315,17 +252,15 @@ export class App {
       case 'confirm-abandon':
         this.confirmAbandon();
         break;
-      case 'resume-test':
-        this.resumePrompt = false;
-        this.testQuestionStartedAt = Date.now();
-        this.render();
+      case 'resume-session':
+        this.resumeSession();
         break;
-      case 'retry-test':
-        if (this.latestResult) this.startTest(this.latestResult.config, this.latestResult.presetName);
+      case 'new-session':
+        this.startSession();
         break;
       case 'fix-misses': {
         const result = this.latestResult ?? this.data.testHistory.at(-1);
-        if (result) this.startFixMisses(result);
+        if (result) this.startFixSession(result);
         break;
       }
       case 'export-data':
@@ -348,15 +283,17 @@ export class App {
   private async handleChange(event: Event): Promise<void> {
     const target = event.target as HTMLInputElement;
     if (target.dataset.action === 'pass-value') {
-      const max = this.draftTest.passMode === 'count' ? this.draftTest.questionCount : 100;
-      this.draftTest.passValue = clamp(Math.round(target.valueAsNumber || 0), 1, max);
+      const session = this.data.settings.session;
+      const max = session.passMode === 'count' ? session.questionCount : 100;
+      session.passValue = clamp(Math.round(target.valueAsNumber || 0), 1, max);
+      this.touchSettings();
+      this.persist();
       this.render();
     }
     if (target.dataset.action === 'import-file' && target.files?.[0]) {
       try {
         this.data = importData(await target.files[0].text());
         this.progressTable = this.data.settings.activeTables[0] ?? 2;
-        this.draftTest = { ...defaultTestConfig(), tables: [...this.data.settings.activeTables] };
         this.persist();
         this.showToast('Backup imported');
       } catch (error) {
@@ -395,13 +332,15 @@ export class App {
   }
 
   private renderHome(): string {
+    const session = this.data.settings.session;
     const activeFacts = factsForTables(this.data.settings.activeTables);
     const labelCounts = activeFacts.reduce<Record<MemoryLabel, number>>((counts, fact) => {
       counts[memoryLabel(this.data.facts[fact.key])] += 1;
       return counts;
     }, { New: 0, Learning: 0, Remembering: 0, Fast: 0, Secure: 0 });
     const growing = labelCounts.Remembering + labelCounts.Fast + labelCounts.Secure;
-    const practiceTarget = this.data.settings.practiceTarget === null ? 'Open' : this.data.settings.practiceTarget;
+    const finishedSessions = this.data.testHistory.filter((result) => result.status !== 'abandoned').length;
+    const needed = requiredCorrect(session);
 
     return `
       <main class="home-shell">
@@ -425,20 +364,13 @@ export class App {
           </div>
         </section>
 
-        <section class="mode-grid" aria-label="Choose a mode">
-          <button class="mode-card learn-card" type="button" data-action="start-learn">
-            <span class="mode-visual mini-array" aria-hidden="true">${Array.from({ length: 12 }, () => '<b></b>').join('')}</span>
-            <span class="mode-copy"><small>Look, build, try</small><strong>Learn</strong></span>
-            ${icon('chevron-right')}
-          </button>
-          <button class="mode-card practice-card" type="button" data-action="start-practice">
-            <span class="mode-visual target-visual" aria-hidden="true"><b>${practiceTarget}</b></span>
-            <span class="mode-copy"><small>Your next set</small><strong>Practice</strong></span>
-            ${icon('chevron-right')}
-          </button>
-          <button class="mode-card test-card" type="button" data-action="open-test-gate">
-            <span class="mode-visual test-visual" aria-hidden="true">${icon('clipboard-check')}</span>
-            <span class="mode-copy"><small>Grown-up start</small><strong>Just Test</strong></span>
+        <section class="mode-grid single-mode" aria-label="Start">
+          <button class="mode-card practice-card" type="button" data-action="start-session">
+            <span class="mode-visual target-visual" aria-hidden="true"><b>${session.questionCount}</b></span>
+            <span class="mode-copy">
+              <small>${session.warmUpCount > 0 ? 'Warm-up, then ' : ''}${session.questionCount} questions · ${needed} to pass</small>
+              <strong>Start</strong>
+            </span>
             ${icon('chevron-right')}
           </button>
         </section>
@@ -458,39 +390,49 @@ export class App {
         <section class="home-progress" aria-label="Learning progress">
           <div><strong>${growing}</strong><span>growing</span></div>
           <div><strong>${labelCounts.Secure}</strong><span>secure</span></div>
-          <div><strong>${this.data.practiceHistory.length}</strong><span>sessions</span></div>
+          <div><strong>${finishedSessions}</strong><span>sessions</span></div>
         </section>
       </main>
     `;
   }
 
-  private renderLearn(): string {
-    if (!this.learn) return this.renderHome();
-    const { fact, phase, input } = this.learn;
-    const explanation = explanationForFact(fact.factorA, fact.factorB);
-    const question = `${fact.factorA} × ${fact.factorB}`;
+  private renderSession(): string {
+    const active = this.data.activeSession;
+    const view = this.session;
+    if (!view || (!active && view.phase !== 'done')) return this.renderHome();
 
-    if (phase === 'complete') {
+    if (view.phase === 'done') {
       return `
-        <main class="child-shell learn-shell complete-shell">
-          ${this.renderChildHeader('Learn', 'home')}
-          <section class="session-complete ${this.learn.independentCorrect ? 'complete-right' : 'complete-return'}">
-            <span class="result-symbol">${this.learn.independentCorrect ? icon('check') : icon('rotate-ccw')}</span>
-            <p class="eyebrow">${question} = ${fact.answer}</p>
-            <h1>${this.learn.independentCorrect ? 'You remembered it' : 'We’ll bring it back'}</h1>
+        <main class="child-shell practice-shell complete-shell">
+          ${this.renderChildHeader('Fix the misses', 'home')}
+          <section class="session-complete complete-right">
+            <span class="result-symbol">${icon('check')}</span>
+            <p class="eyebrow">Misses fixed</p>
+            <h1>All sorted</h1>
             <div class="complete-actions">
-              <button class="primary-button learn-button" type="button" data-action="learn-another">${icon('book-open')} Learn another</button>
-              <button class="secondary-button" type="button" data-action="learn-practice">${icon('brain')} Practice</button>
+              <button class="primary-button practice-button" type="button" data-action="home">${icon('home')} Home</button>
             </div>
           </section>
         </main>
       `;
     }
 
-    if (phase === 'explain') {
+    if (view.phase === 'look' || view.phase === 'try') {
+      return this.renderWarmUp(view);
+    }
+
+    return this.renderQuestions(active!, view);
+  }
+
+  private renderWarmUp(view: SessionView): string {
+    const fact = view.warmFact!;
+    const explanation = explanationForFact(fact.factorA, fact.factorB);
+    const question = `${fact.factorA} × ${fact.factorB}`;
+
+    if (view.phase === 'look') {
       return `
         <main class="child-shell learn-shell">
-          ${this.renderChildHeader('Learn', 'home')}
+          ${this.renderChildHeader('Warm-up', 'session-exit')}
           <section class="lesson-stage">
             <p class="eyebrow">${question}</p>
             <h1>${escapeHtml(explanation.title)}</h1>
@@ -499,94 +441,69 @@ export class App {
             <p class="lesson-equation">${escapeHtml(explanation.equation)}</p>
           </section>
           <footer class="lesson-footer">
-            <button class="primary-button learn-button" type="button" data-action="learn-try">Try it ${icon('chevron-right')}</button>
+            <button class="primary-button learn-button" type="button" data-action="warmup-try">Try it ${icon('chevron-right')}</button>
           </footer>
         </main>
       `;
     }
 
-    const corrective = phase === 'guided-correction' || phase === 'correction';
-    const independent = phase === 'independent' || phase === 'correction';
     return `
       <main class="child-shell learn-shell question-shell">
-        ${this.renderChildHeader(independent ? 'Your turn' : 'Build it', 'home')}
+        ${this.renderChildHeader('Warm-up', 'session-exit')}
         <section class="question-stage">
-          ${!independent || corrective ? `<div class="compact-visual">${renderFactVisual(fact.factorA, fact.factorB)}</div>` : ''}
-          ${corrective ? `
+          <div class="compact-visual">${renderFactVisual(fact.factorA, fact.factorB)}</div>
+          ${view.warmMissed ? `
             <div class="correction-copy" role="status">
               <strong>${fact.factorA} groups of ${fact.factorB} make ${fact.answer}</strong>
               <span>Type ${fact.answer}</span>
             </div>
           ` : ''}
-          <div class="equation ${corrective ? 'equation-small' : ''}">
-            <span>${question}</span><span>=</span><output aria-label="Your answer">${input || '?'}</output>
+          <div class="equation ${view.warmMissed ? 'equation-small' : ''}">
+            <span>${question}</span><span>=</span><output aria-label="Your answer">${view.input || '?'}</output>
           </div>
         </section>
-        ${renderKeypad(input)}
+        ${renderKeypad(view.input)}
       </main>
     `;
   }
 
-  private renderPractice(): string {
-    if (!this.practice) return this.renderHome();
-    const state = this.practice;
-    const fact = state.current;
-
-    const fixing = state.fixQueue !== null;
-    if (state.phase === 'complete') {
-      return `
-        <main class="child-shell practice-shell complete-shell">
-          ${this.renderChildHeader(fixing ? 'Fix the misses' : 'Practice', 'home')}
-          <section class="session-complete complete-right">
-            <span class="result-symbol">${icon('check')}</span>
-            <p class="eyebrow">${fixing ? 'Misses fixed' : 'Set complete'}</p>
-            <h1>${state.correct} of ${state.answered}</h1>
-            <p class="complete-note">answered first time</p>
-            <div class="complete-actions">
-              ${fixing
-                ? `<button class="primary-button practice-button" type="button" data-action="home">${icon('home')} Home</button>`
-                : `
-                  <button class="primary-button practice-button" type="button" data-action="start-practice">${icon('play')} Another set</button>
-                  <button class="secondary-button" type="button" data-action="home">${icon('home')} Home</button>
-                `}
-            </div>
-          </section>
-        </main>
-      `;
-    }
-
-    const total = state.target;
-    const currentNumber = state.phase === 'answer' ? state.answered + 1 : state.answered;
-    const remainingFixes = fixing
-      ? state.fixQueue!.length + (state.phase === 'answer' || state.phase === 'correction' ? 1 : 0)
+  private renderQuestions(active: ActiveSession, view: SessionView): string {
+    const current = view.current;
+    if (!current) return this.renderHome();
+    const total = active.config.questionCount;
+    const currentNumber = view.phase === 'answer' ? active.answered + 1 : active.answered;
+    const remainingFixes = view.fixing
+      ? (active.fixQueue?.length ?? 0)
       : 0;
-    const progress = fixing
+    const progress = view.fixing
       ? `<div class="child-progress open-progress"><span>${remainingFixes} to fix</span></div>`
-      : total
-        ? `<div class="child-progress"><span>${Math.min(currentNumber, total)} / ${total}</span>${renderProgressBar(state.answered, total, 'Practice progress')}</div>`
-        : `<div class="child-progress open-progress"><span>${state.answered} done</span></div>`;
-    const correction = state.phase === 'correction' || state.phase === 'corrected';
-    const feedback = state.phase === 'right' || state.phase === 'corrected';
+      : `<div class="child-progress"><span>${Math.min(currentNumber, total)} / ${total}</span>${renderProgressBar(active.answered, total, 'Session progress')}</div>`;
+    const correction = view.phase === 'correction' || view.phase === 'corrected';
+    const feedback = view.phase === 'right' || view.phase === 'corrected';
+    const presented = current.presented;
+    const correctionCopy = presented.kind === 'division'
+      ? `<p><strong>${presented.left} shared into ${presented.right}s makes ${presented.answer}</strong><span>Type ${presented.answer}</span></p>`
+      : `<p><strong>${current.factorA} groups of ${current.factorB} make ${presented.answer}</strong><span>Type the correct answer</span></p>`;
 
     return `
       <main class="child-shell practice-shell question-shell">
-        ${this.renderChildHeader(fixing ? 'Fix the misses' : 'Practice', 'practice-end')}
+        ${this.renderChildHeader(view.fixing ? 'Fix the misses' : 'Questions', 'session-exit')}
         ${progress}
         <section class="question-stage ${feedback ? 'has-feedback' : ''}">
           ${correction ? `
             <div class="practice-correction" role="status">
-              <div class="compact-visual">${renderFactVisual(fact.factorA, fact.factorB)}</div>
-              <p><strong>${fact.factorA} groups of ${fact.factorB} make ${fact.factorA * fact.factorB}</strong><span>Type the correct answer</span></p>
+              <div class="compact-visual">${renderFactVisual(current.factorA, current.factorB)}</div>
+              ${correctionCopy}
             </div>
           ` : ''}
           <div class="equation ${correction ? 'equation-small' : ''}">
-            <span>${fact.factorA} × ${fact.factorB}</span><span>=</span>
-            <output aria-label="Your answer">${feedback && state.phase === 'right' ? fact.factorA * fact.factorB : state.input || '?'}</output>
+            <span>${presented.left} ${presented.operator} ${presented.right}</span><span>=</span>
+            <output aria-label="Your answer">${view.phase === 'right' ? presented.answer : view.input || '?'}</output>
           </div>
-          ${state.phase === 'right' ? '<p class="answer-feedback right-feedback" role="status">Yes</p>' : ''}
-          ${state.phase === 'corrected' ? '<p class="answer-feedback right-feedback" role="status">That’s it</p>' : ''}
+          ${view.phase === 'right' ? '<p class="answer-feedback right-feedback" role="status">Yes</p>' : ''}
+          ${view.phase === 'corrected' ? '<p class="answer-feedback right-feedback" role="status">That’s it</p>' : ''}
         </section>
-        ${renderKeypad(state.input, feedback)}
+        ${renderKeypad(view.input, feedback)}
       </main>
     `;
   }
@@ -601,17 +518,57 @@ export class App {
     `;
   }
 
+  private renderResult(): string {
+    const result = this.latestResult ?? this.data.testHistory.at(-1);
+    if (!result || result.status === 'abandoned') return this.renderHome();
+    const passed = result.status === 'passed';
+    const needed = requiredCorrect(result.config);
+    const missed = result.questions.filter((question) => {
+      const answer = result.answers.find((item) => item.questionId === question.id);
+      return answer && !answer.correct;
+    });
+
+    return `
+      <main class="result-shell ${passed ? 'pass-result' : 'fail-result'}">
+        <header class="result-header"><span>Danny Times</span><strong>${escapeHtml(result.presetName ?? 'Session')}</strong></header>
+        <section class="result-main">
+          <span class="result-stamp">${passed ? icon('shield-check') : icon('rotate-ccw')}</span>
+          <p class="result-word">${passed ? 'PASS' : 'NOT YET'}</p>
+          <h1>${result.correct} / ${result.config.questionCount} correct</h1>
+          <p class="pass-line">Pass mark ${needed}</p>
+          <p class="result-time">Finished ${formatDate(result.finishedAt)}</p>
+        </section>
+        <section class="result-details">
+          <div class="result-metrics">
+            <div><strong>${result.config.questionCount - result.correct}</strong><span>missed</span></div>
+            <div><strong>${Math.round(result.correct / result.config.questionCount * 100)}%</strong><span>score</span></div>
+            <div><strong>${result.config.tables.join(', ')}</strong><span>tables</span></div>
+          </div>
+          ${missed.length ? `
+            <details class="missed-details">
+              <summary>Review ${missed.length} missed ${missed.length === 1 ? 'question' : 'questions'}</summary>
+              <div>${missed.map((question) => {
+                const answer = result.answers.find((item) => item.questionId === question.id)!;
+                return `<p><span>${question.left} ${question.operator} ${question.right}</span><s>${answer.answer}</s><strong>${question.answer}</strong></p>`;
+              }).join('')}</div>
+            </details>
+          ` : ''}
+          <div class="result-actions">
+            ${missed.length ? `<button class="${passed ? 'secondary-button' : 'primary-button test-button'}" type="button" data-action="fix-misses">${icon('brain')} Fix the ${missed.length === 1 ? 'miss' : 'misses'}</button>` : ''}
+            ${!passed ? `<button class="secondary-button" type="button" data-action="new-session">${icon('rotate-ccw')} New session</button>` : ''}
+            <button class="${passed ? 'primary-button test-button' : 'secondary-button'}" type="button" data-action="home">${icon('home')} Home</button>
+          </div>
+        </section>
+      </main>
+    `;
+  }
+
   private renderParent(): string {
     const tabs: Array<{ id: ParentTab; label: string; iconName: string }> = [
       { id: 'progress', label: 'Progress', iconName: 'bar-chart-3' },
-      { id: 'tests', label: 'Tests', iconName: 'clipboard-check' },
       { id: 'settings', label: 'Settings', iconName: 'settings' },
     ];
-    const view = this.parentTab === 'progress'
-      ? this.renderProgressView()
-      : this.parentTab === 'tests'
-        ? this.renderTestsView()
-        : this.renderSettingsView();
+    const view = this.parentTab === 'progress' ? this.renderProgressView() : this.renderSettingsView();
 
     return `
       <main class="parent-shell">
@@ -660,8 +617,7 @@ export class App {
       .filter((fact) => memoryLabel(this.data.facts[fact.key]) === 'Secure')
       .sort((a, b) => (this.data.facts[b.key].lastCorrectAt ?? 0) - (this.data.facts[a.key].lastCorrectAt ?? 0))
       .slice(0, 4);
-    const recentPractice = this.data.practiceHistory.slice(-3).reverse();
-    const recentTests = this.data.testHistory.filter((result) => result.status !== 'abandoned').slice(-3).reverse();
+    const recentSessions = this.data.testHistory.slice(-5).reverse();
 
     return `
       <section class="parent-section progress-overview">
@@ -715,116 +671,85 @@ export class App {
               return `<button type="button" data-action="inspect-fact" data-key="${fact.key}"><strong>${fact.factorA} × ${fact.factorB}</strong><span>${reason}</span>${icon('chevron-right')}</button>`;
             }).join('')}
           </div>
-        ` : '<p class="empty-copy">Practice answers will appear here.</p>'}
+        ` : '<p class="empty-copy">Session answers will appear here.</p>'}
         ${slowFacts.length ? `<div class="slow-row"><span>Correct but slow</span>${slowFacts.map((fact) => `<button type="button" data-action="inspect-fact" data-key="${fact.key}">${fact.factorA}×${fact.factorB}</button>`).join('')}</div>` : ''}
         ${oftenMissed.length ? `<div class="slow-row"><span>Often missed</span>${oftenMissed.map((fact) => `<button type="button" data-action="inspect-fact" data-key="${fact.key}">${fact.factorA}×${fact.factorB}</button>`).join('')}</div>` : ''}
         ${recentlySecure.length ? `<div class="slow-row"><span>Recently secure</span>${recentlySecure.map((fact) => `<button type="button" data-action="inspect-fact" data-key="${fact.key}">${fact.factorA}×${fact.factorB}</button>`).join('')}</div>` : ''}
         <details class="how-it-works">
-          <summary>${icon('info')} How practice chooses</summary>
-          <p>Practice aims near 75% recall: fading facts, recent mistakes and new facts get priority. A missed fact returns after 3–5 different questions, then at longer gaps. Corrected answers do not count as mastery.</p>
+          <summary>${icon('info')} How sessions choose questions</summary>
+          <p>Each session warms up the facts most in need, then asks questions aimed near 75% recall. New facts arrive steadily (about one in four questions while any remain), a fact never repeats within eight questions unless it was missed, and a missed fact returns after 3–5 questions. The score counts first answers only.</p>
         </details>
       </section>
 
       <section class="parent-section activity-section">
-        <div class="section-heading"><div><p class="eyebrow">History</p><h2>Recent activity</h2></div></div>
-        <div class="activity-columns">
-          <div>
-            <h3>Practice</h3>
-            ${recentPractice.length ? recentPractice.map((session) => `
-              <div class="activity-item"><span class="activity-icon practice-icon">${icon('brain')}</span><p><strong>${session.mode === 'learn' ? 'Learn' : `${session.answered} questions`}</strong><span>${session.independentCorrect} first-time correct · ${formatAgo(session.finishedAt)}</span></p></div>
-            `).join('') : '<p class="empty-copy">No sessions yet.</p>'}
-          </div>
-          <div>
-            <h3>Tests</h3>
-            ${recentTests.length ? recentTests.map((result) => `
-              <div class="activity-item"><span class="activity-icon ${result.status === 'passed' ? 'passed-icon' : 'failed-icon'}">${result.status === 'passed' ? icon('check') : icon('x')}</span><p><strong>${result.status === 'passed' ? 'Pass' : 'Not yet'} · ${result.correct}/${result.config.questionCount}</strong><span>${escapeHtml(result.presetName ?? 'Custom test')} · ${formatAgo(result.finishedAt)}</span></p></div>
-            `).join('') : '<p class="empty-copy">No completed tests yet.</p>'}
-          </div>
-        </div>
+        <div class="section-heading"><div><p class="eyebrow">History</p><h2>Recent sessions</h2></div></div>
+        ${recentSessions.length ? recentSessions.map((result) => {
+          const passed = result.status === 'passed';
+          const label = result.status === 'abandoned'
+            ? `Stopped at ${result.answered}`
+            : `${passed ? 'Pass' : 'Not yet'} · ${result.correct}/${result.config.questionCount}`;
+          return `
+            <div class="activity-item">
+              <span class="activity-icon ${passed ? 'passed-icon' : 'failed-icon'}">${passed ? icon('check') : result.status === 'abandoned' ? icon('pause') : icon('x')}</span>
+              <p><strong>${label}</strong><span>${result.config.tables.join(', ')} tables · ${formatAgo(result.finishedAt)}</span></p>
+            </div>
+          `;
+        }).join('') : '<p class="empty-copy">No sessions yet.</p>'}
       </section>
     `;
   }
 
-  private renderTestsView(): string {
-    const needed = requiredCorrect(this.draftTest);
+  private renderSettingsView(): string {
+    const session = this.data.settings.session;
+    const needed = requiredCorrect(session);
     return `
-      <section class="parent-section test-presets-section">
-        <div class="section-heading"><div><p class="eyebrow">Quick start</p><h1>Just Test</h1></div></div>
-        <div class="preset-list">
-          ${this.data.presets.map((preset) => {
-            const presetIcon = preset.id === 'screen-time-test' ? 'gamepad-2' : preset.id === 'restaurant-test' ? 'utensils' : 'clipboard-check';
-            return `
-            <div class="preset-row">
-              <span class="preset-icon">${icon(presetIcon)}</span>
-              <p><strong>${escapeHtml(preset.name)}</strong><span>${preset.config.questionCount} questions · need ${requiredCorrect(preset.config)} · ${preset.config.tables.join(', ')}</span></p>
-              ${!BUILTIN_PRESET_IDS.includes(preset.id) ? `<button class="icon-button subtle-button" type="button" data-action="delete-preset" data-id="${escapeHtml(preset.id)}" aria-label="Delete ${escapeHtml(preset.name)}">${icon('trash-2')}</button>` : ''}
-              <button class="play-button" type="button" data-action="start-preset" data-id="${escapeHtml(preset.id)}" aria-label="Start ${escapeHtml(preset.name)}">${icon('play')}</button>
-            </div>
-          `;
-          }).join('')}
+      <section class="parent-section settings-section">
+        <div class="section-heading"><div><p class="eyebrow">Learning</p><h1>Settings</h1></div></div>
+        <div class="form-group">
+          <div class="form-label"><strong>Active tables</strong><span>${this.data.settings.activeTables.length} selected</span></div>
+          ${this.renderTableSelector(this.data.settings.activeTables)}
         </div>
       </section>
 
-      <section class="parent-section test-builder-section">
-        <div class="section-heading"><div><p class="eyebrow">New test</p><h2>Set the gate</h2></div></div>
+      <section class="parent-section session-section">
+        <div class="section-heading"><div><p class="eyebrow">Each session</p><h2>Warm-up and questions</h2></div></div>
         <div class="form-group">
-          <div class="form-label"><strong>Tables</strong><span>${this.draftTest.tables.length} selected</span></div>
-          ${this.renderTableSelector(this.draftTest.tables, 'test')}
+          <div class="form-label"><strong>Warm-up facts</strong><span>shown before the questions</span></div>
+          <div class="segmented-control four-segments">
+            ${WARM_UP_COUNTS.map((count) => `<button type="button" class="${session.warmUpCount === count ? 'active' : ''}" data-action="set-warmup" data-value="${count}">${count === 0 ? 'Off' : count}</button>`).join('')}
+          </div>
         </div>
         <div class="form-group">
           <div class="form-label"><strong>Questions</strong></div>
-          <div class="segmented-control three-segments">
-            ${[20, 50, 100].map((count) => `<button type="button" class="${this.draftTest.questionCount === count ? 'active' : ''}" data-action="set-test-count" data-value="${count}">${count}</button>`).join('')}
+          <div class="segmented-control four-segments">
+            ${QUESTION_COUNTS.map((count) => `<button type="button" class="${session.questionCount === count ? 'active' : ''}" data-action="set-session-count" data-value="${count}">${count}</button>`).join('')}
           </div>
         </div>
         <div class="form-split">
           <div class="form-group">
             <div class="form-label"><strong>Pass mark</strong></div>
             <div class="segmented-control two-segments compact-segments">
-              <button type="button" class="${this.draftTest.passMode === 'count' ? 'active' : ''}" data-action="set-pass-mode" data-value="count">Number</button>
-              <button type="button" class="${this.draftTest.passMode === 'percent' ? 'active' : ''}" data-action="set-pass-mode" data-value="percent">Percent</button>
+              <button type="button" class="${session.passMode === 'count' ? 'active' : ''}" data-action="set-pass-mode" data-value="count">Number</button>
+              <button type="button" class="${session.passMode === 'percent' ? 'active' : ''}" data-action="set-pass-mode" data-value="percent">Percent</button>
             </div>
           </div>
           <div class="form-group">
-            <div class="form-label"><strong>Required</strong><span>${needed} of ${this.draftTest.questionCount}</span></div>
+            <div class="form-label"><strong>Required</strong><span>${needed} of ${session.questionCount}</span></div>
             <div class="stepper">
               <button type="button" data-action="step-pass" data-amount="-1" aria-label="Decrease pass mark">${icon('minus')}</button>
-              <input type="number" data-action="pass-value" min="1" max="${this.draftTest.passMode === 'count' ? this.draftTest.questionCount : 100}" value="${this.draftTest.passValue}" aria-label="Required ${this.draftTest.passMode === 'count' ? 'correct answers' : 'percentage'}" />
-              <span>${this.draftTest.passMode === 'percent' ? '%' : ''}</span>
+              <input type="number" data-action="pass-value" min="1" max="${session.passMode === 'count' ? session.questionCount : 100}" value="${session.passValue}" aria-label="Required ${session.passMode === 'count' ? 'correct answers' : 'percentage'}" />
+              <span>${session.passMode === 'percent' ? '%' : ''}</span>
               <button type="button" data-action="step-pass" data-amount="1" aria-label="Increase pass mark">${icon('plus')}</button>
             </div>
           </div>
         </div>
-        <button class="switch-row" type="button" role="switch" aria-checked="${this.draftTest.includeDivision}" data-action="toggle-division">
+        <button class="switch-row" type="button" role="switch" aria-checked="${session.includeDivision}" data-action="toggle-division">
           <span><strong>Related division</strong><small>Mix in questions such as 35 ÷ 5</small></span>
-          <i class="switch ${this.draftTest.includeDivision ? 'on' : ''}"><b></b></i>
+          <i class="switch ${session.includeDivision ? 'on' : ''}"><b></b></i>
         </button>
-        <div class="builder-actions">
-          <button class="secondary-button" type="button" data-action="save-preset">${icon('save')} Save preset</button>
-          <button class="primary-button test-button" type="button" data-action="start-custom-test">${icon('play')} Start test</button>
-        </div>
       </section>
-    `;
-  }
 
-  private renderSettingsView(): string {
-    const target = this.data.settings.practiceTarget;
-    return `
-      <section class="parent-section settings-section">
-        <div class="section-heading"><div><p class="eyebrow">Learning</p><h1>Settings</h1></div></div>
-        <div class="form-group">
-          <div class="form-label"><strong>Active tables</strong><span>${this.data.settings.activeTables.length} selected</span></div>
-          ${this.renderTableSelector(this.data.settings.activeTables, 'settings')}
-        </div>
-        <div class="form-group">
-          <div class="form-label"><strong>Practice set</strong></div>
-          <div class="segmented-control four-segments">
-            ${[10, 20, 30, 'open'].map((value) => {
-              const selected = value === 'open' ? target === null : target === value;
-              return `<button type="button" class="${selected ? 'active' : ''}" data-action="set-practice-target" data-value="${value}">${value === 'open' ? 'Open' : value}</button>`;
-            }).join('')}
-          </div>
-        </div>
+      <section class="parent-section sound-section">
         <button class="switch-row" type="button" role="switch" aria-checked="${this.data.settings.soundEnabled}" data-action="toggle-sound">
           <span class="setting-icon">${this.data.settings.soundEnabled ? icon('volume-2') : icon('volume-x')}</span>
           <span><strong>Sound</strong><small>Quiet by default</small></span>
@@ -879,7 +804,7 @@ export class App {
     return last ? `Synced ${formatAgo(last)}` : 'Waiting for the first sync';
   }
 
-  private renderTableSelector(selected: number[], context: string): string {
+  private renderTableSelector(selected: number[]): string {
     const groups = [
       { id: 'core', label: 'Core', detail: '2, 3, 5, 10', tables: CORE_TABLES },
       { id: 'beyond', label: 'Beyond core', detail: 'the other 8', tables: BEYOND_CORE_TABLES },
@@ -888,86 +813,16 @@ export class App {
     return `
       <div class="table-quick-sets" aria-label="Quick table choices">
         ${groups.map((group) => `
-          <button type="button" class="${this.sameTableSelection(selected, group.tables) ? 'active' : ''}" data-action="set-table-group" data-context="${context}" data-group="${group.id}">
+          <button type="button" class="${this.sameTableSelection(selected, group.tables) ? 'active' : ''}" data-action="set-table-group" data-group="${group.id}">
             <strong>${group.label}</strong><small>${group.detail}</small>
           </button>
         `).join('')}
       </div>
       <div class="table-selector" aria-label="Times tables">
         ${ALL_TABLES.map((table) => `
-          <button type="button" class="${selected.includes(table) ? 'active' : ''}" data-action="toggle-table" data-context="${context}" data-table="${table}" aria-pressed="${selected.includes(table)}">${table}</button>
+          <button type="button" class="${selected.includes(table) ? 'active' : ''}" data-action="toggle-table" data-table="${table}" aria-pressed="${selected.includes(table)}">${table}</button>
         `).join('')}
       </div>
-    `;
-  }
-
-  private renderTest(): string {
-    const active = this.data.activeTest;
-    if (!active) return this.latestResult ? this.renderTestResult() : this.renderHome();
-    const index = active.answers.length;
-    const question = active.questions[index];
-    const total = active.config.questionCount;
-
-    return `
-      <main class="child-shell strict-test-shell question-shell">
-        <header class="test-header">
-          <span class="test-badge">Just Test</span>
-          <strong>${index + 1} / ${total}</strong>
-          <button class="icon-button" type="button" data-action="test-exit" aria-label="Leave test">${icon('x')}</button>
-        </header>
-        <div class="test-progress">${renderProgressBar(index, total, 'Test progress')}</div>
-        <section class="question-stage">
-          <div class="equation test-equation">
-            <span>${question.left} ${question.operator} ${question.right}</span><span>=</span><output aria-label="Your answer">${this.testInput || '?'}</output>
-          </div>
-        </section>
-        ${renderKeypad(this.testInput)}
-      </main>
-    `;
-  }
-
-  private renderTestResult(): string {
-    const result = this.latestResult ?? this.data.testHistory.at(-1);
-    if (!result || result.status === 'abandoned') return this.renderHome();
-    const passed = result.status === 'passed';
-    const needed = requiredCorrect(result.config);
-    const missed = result.questions.filter((question) => {
-      const answer = result.answers.find((item) => item.questionId === question.id);
-      return answer && !answer.correct;
-    });
-
-    return `
-      <main class="result-shell ${passed ? 'pass-result' : 'fail-result'}">
-        <header class="result-header"><span>Danny Times</span><strong>${escapeHtml(result.presetName ?? 'Just Test')}</strong></header>
-        <section class="result-main">
-          <span class="result-stamp">${passed ? icon('shield-check') : icon('rotate-ccw')}</span>
-          <p class="result-word">${passed ? 'PASS' : 'NOT YET'}</p>
-          <h1>${result.correct} / ${result.config.questionCount} correct</h1>
-          ${passed ? `<p class="pass-line">Pass mark ${needed}</p>` : `<p class="pass-line">Pass mark: ${needed}</p>`}
-          <p class="result-time">Finished ${formatDate(result.finishedAt)}</p>
-        </section>
-        <section class="result-details">
-          <div class="result-metrics">
-            <div><strong>${result.config.questionCount - result.correct}</strong><span>missed</span></div>
-            <div><strong>${Math.round(result.correct / result.config.questionCount * 100)}%</strong><span>score</span></div>
-            <div><strong>${result.config.tables.join(', ')}</strong><span>tables</span></div>
-          </div>
-          ${missed.length ? `
-            <details class="missed-details">
-              <summary>Review ${missed.length} missed ${missed.length === 1 ? 'question' : 'questions'}</summary>
-              <div>${missed.map((question) => {
-                const answer = result.answers.find((item) => item.questionId === question.id)!;
-                return `<p><span>${question.left} ${question.operator} ${question.right}</span><s>${answer.answer}</s><strong>${question.answer}</strong></p>`;
-              }).join('')}</div>
-            </details>
-          ` : ''}
-          <div class="result-actions">
-            ${missed.length ? `<button class="${passed ? 'secondary-button' : 'primary-button test-button'}" type="button" data-action="fix-misses">${icon('brain')} Fix the ${missed.length === 1 ? 'miss' : 'misses'}</button>` : ''}
-            ${!passed ? `<button class="secondary-button" type="button" data-action="retry-test">${icon('rotate-ccw')} New test</button>` : ''}
-            <button class="${passed ? 'primary-button test-button' : 'secondary-button'}" type="button" data-action="home">${icon('home')} Home</button>
-          </div>
-        </section>
-      </main>
     `;
   }
 
@@ -986,17 +841,20 @@ export class App {
         </div>
       `);
     }
-    if (this.resumePrompt && this.data.activeTest) {
-      const active = this.data.activeTest;
+    if (this.resumePrompt && this.data.activeSession) {
+      const active = this.data.activeSession;
+      const headline = active.warmUpQueue.length
+        ? 'Warm-up in progress'
+        : `${active.answered} of ${active.fixQueue ? active.answered + active.fixQueue.length : active.config.questionCount} answered`;
       overlays.push(`
         <div class="modal-backdrop" role="presentation">
           <section class="modal resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-title">
             <span class="modal-symbol test-symbol">${icon('pause')}</span>
-            <p class="eyebrow">Test in progress</p>
-            <h2 id="resume-title">${active.answers.length} of ${active.config.questionCount} answered</h2>
+            <p class="eyebrow">Session in progress</p>
+            <h2 id="resume-title">${headline}</h2>
             <div class="modal-actions">
-              <button class="primary-button test-button" type="button" data-action="resume-test">${icon('play')} Resume</button>
-              <button class="secondary-button" type="button" data-action="confirm-abandon">End test</button>
+              <button class="primary-button test-button" type="button" data-action="resume-session">${icon('play')} Resume</button>
+              <button class="secondary-button" type="button" data-action="confirm-abandon">End session</button>
             </div>
           </section>
         </div>
@@ -1007,11 +865,11 @@ export class App {
         <div class="modal-backdrop" role="presentation">
           <section class="modal" role="dialog" aria-modal="true" aria-labelledby="abandon-title">
             <span class="modal-symbol test-symbol">${icon('clipboard-check')}</span>
-            <p class="eyebrow">Just Test</p>
-            <h2 id="abandon-title">End this test?</h2>
-            <p class="modal-copy">It will be recorded as abandoned, never as a pass.</p>
+            <p class="eyebrow">Session</p>
+            <h2 id="abandon-title">End this session?</h2>
+            <p class="modal-copy">It will be recorded as stopped early, never as a pass.</p>
             <div class="modal-actions">
-              <button class="danger-button" type="button" data-action="confirm-abandon">End test</button>
+              <button class="danger-button" type="button" data-action="confirm-abandon">End session</button>
               <button class="secondary-button" type="button" data-action="cancel-abandon">Keep going</button>
             </div>
           </section>
@@ -1025,7 +883,7 @@ export class App {
             <span class="modal-symbol danger-symbol">${icon('trash-2')}</span>
             <p class="eyebrow">Local data</p>
             <h2 id="reset-title">Reset everything?</h2>
-            <p class="modal-copy">Progress, test history, settings and presets will be removed from this device.${this.data.sync ? ' Family sync will be turned off and the cloud copy cleared.' : ''}</p>
+            <p class="modal-copy">Progress, session history and settings will be removed from this device.${this.data.sync ? ' Family sync will be turned off and the cloud copy cleared.' : ''}</p>
             <div class="modal-actions">
               <button class="danger-button" type="button" data-action="confirm-reset">Reset all</button>
               <button class="secondary-button" type="button" data-action="cancel-reset">Cancel</button>
@@ -1071,16 +929,10 @@ export class App {
     `;
   }
 
-  private openParentGate(destination: ParentTab): void {
-    this.gateDestination = destination;
-    this.gateOpen = true;
-    this.render();
-  }
-
   private unlockParent(): void {
     this.cancelParentHold();
     this.gateOpen = false;
-    this.parentTab = this.gateDestination;
+    this.parentTab = 'progress';
     this.screen = 'parent';
     this.render();
   }
@@ -1088,70 +940,58 @@ export class App {
   private goHome(): void {
     this.clearTransition();
     this.screen = 'home';
-    this.practice = null;
-    this.learn = null;
+    this.session = null;
     this.latestResult = null;
     this.render();
   }
 
-  private startLearn(avoidKey?: FactKey): void {
-    this.clearTransition();
-    const candidates = factsForTables(this.data.settings.activeTables)
-      .map((fact) => {
-        const progress = this.data.facts[fact.key];
-        const label = memoryLabel(progress);
-        let score = label === 'New' ? 10 : label === 'Learning' ? 7 : 2;
-        score += weaknessScore(progress) * 4 + Math.random();
-        if (fact.key === avoidKey) score -= 8;
-        return { fact, score };
-      })
-      .sort((a, b) => b.score - a.score);
-    const fact = candidates[0].fact;
-    this.learn = {
-      id: this.makeId('learn'),
-      startedAt: Date.now(),
-      fact,
-      input: '',
-      phase: 'explain',
-      questionStartedAt: Date.now(),
-      independentCorrect: false,
-      completed: false,
-    };
-    this.screen = 'learn';
-    this.render();
-  }
+  // --- Session flow ---------------------------------------------------------
 
-  private startPractice(): void {
+  private startSession(): void {
     this.clearTransition();
-    const id = this.makeId('practice');
-    const current = choosePracticeFact({
-      tables: this.data.settings.activeTables,
-      facts: this.data.facts,
-      recent: [],
-      retries: [],
-      answered: 0,
-    });
-    this.practice = {
-      id,
+    const settings = this.data.settings;
+    const warmUp = pickWarmUpFacts(settings.activeTables, this.data.facts, settings.session.warmUpCount);
+    const active: ActiveSession = {
+      id: this.makeId('session'),
       startedAt: Date.now(),
-      target: this.data.settings.practiceTarget,
+      config: {
+        tables: [...settings.activeTables],
+        questionCount: settings.session.questionCount,
+        passMode: settings.session.passMode,
+        passValue: settings.session.passValue,
+        includeDivision: settings.session.includeDivision,
+      },
+      warmUpQueue: warmUp.map((fact) => fact.key),
       answered: 0,
       correct: 0,
-      current,
+      introduced: warmUp.filter((fact) => !this.data.facts[fact.key]).length,
       recent: [],
-      retries: [],
-      factKeys: [],
-      input: '',
-      phase: 'answer',
-      questionStartedAt: Date.now(),
-      completed: false,
+      retries: warmUpRetries(warmUp.map((fact) => fact.key)),
+      records: [],
       fixQueue: null,
     };
-    this.screen = 'practice';
+    this.data.activeSession = active;
+    this.latestResult = null;
+    this.resumePrompt = false;
+    this.abandonPrompt = false;
+    this.session = {
+      phase: 'look',
+      fixing: false,
+      warmFact: warmUp.length ? warmUp[0] : null,
+      warmMissed: false,
+      current: null,
+      input: '',
+      questionStartedAt: Date.now(),
+    };
+    this.screen = 'session';
+    if (!warmUp.length) {
+      this.nextQuestion();
+    }
+    this.persist();
     this.render();
   }
 
-  private startFixMisses(result: TestResult): void {
+  private startFixSession(result: TestResult): void {
     this.clearTransition();
     const missedKeys = [...new Set(result.questions
       .filter((question) => {
@@ -1161,26 +1001,169 @@ export class App {
       .map((question) => question.factKey))];
     if (!missedKeys.length) return;
 
-    const first = parseFactKey(missedKeys[0]);
     this.latestResult = null;
-    this.practice = {
-      id: this.makeId('practice'),
+    this.data.activeSession = {
+      id: this.makeId('session'),
       startedAt: Date.now(),
-      target: null,
+      config: { ...result.config, tables: [...result.config.tables] },
+      warmUpQueue: [],
       answered: 0,
       correct: 0,
-      current: { ...first, reason: 'retry' },
+      introduced: 0,
       recent: [],
       retries: [],
-      factKeys: [],
-      input: '',
-      phase: 'answer',
-      questionStartedAt: Date.now(),
-      completed: false,
-      fixQueue: missedKeys.slice(1),
+      records: [],
+      fixQueue: missedKeys,
     };
-    this.screen = 'practice';
+    this.session = {
+      phase: 'answer',
+      fixing: true,
+      warmFact: null,
+      warmMissed: false,
+      current: null,
+      input: '',
+      questionStartedAt: Date.now(),
+    };
+    this.screen = 'session';
+    this.nextQuestion();
+    this.persist();
     this.render();
+  }
+
+  private resumeSession(): void {
+    const active = this.data.activeSession;
+    if (!active) {
+      this.resumePrompt = false;
+      this.render();
+      return;
+    }
+    this.resumePrompt = false;
+    this.session = {
+      phase: 'look',
+      fixing: active.fixQueue !== null,
+      warmFact: null,
+      warmMissed: false,
+      current: null,
+      input: '',
+      questionStartedAt: Date.now(),
+    };
+    this.screen = 'session';
+    if (active.warmUpQueue.length) {
+      this.session.warmFact = parseFactKey(active.warmUpQueue[0]);
+    } else {
+      this.nextQuestion();
+    }
+    this.render();
+  }
+
+  private exitSession(): void {
+    const active = this.data.activeSession;
+    if (!active || this.session?.phase === 'done') {
+      this.goHome();
+      return;
+    }
+    if (active.fixQueue !== null || active.answered === 0) {
+      this.data.activeSession = null;
+      this.persist();
+      this.goHome();
+      return;
+    }
+    this.abandonPrompt = true;
+    this.render();
+  }
+
+  private confirmAbandon(): void {
+    const active = this.data.activeSession;
+    if (active) {
+      if (active.fixQueue === null && active.answered > 0) {
+        this.data.testHistory = [...this.data.testHistory, sessionResult(active, 'abandoned')].slice(-100);
+      }
+      this.data.activeSession = null;
+      this.persist();
+    }
+    this.abandonPrompt = false;
+    this.resumePrompt = false;
+    this.session = null;
+    this.screen = 'home';
+    this.render();
+  }
+
+  private nextQuestion(): void {
+    const active = this.data.activeSession;
+    const view = this.session;
+    if (!active || !view) return;
+
+    if (active.fixQueue !== null) {
+      const nextKey = active.fixQueue[0];
+      if (!nextKey) {
+        this.data.activeSession = null;
+        view.phase = 'done';
+        view.current = null;
+        this.persist();
+        return;
+      }
+      const fact = parseFactKey(nextKey);
+      view.current = {
+        ...fact,
+        reason: 'retry',
+        presented: presentQuestion(fact.factorA, fact.factorB, false),
+      };
+      view.phase = 'answer';
+      view.input = '';
+      view.questionStartedAt = Date.now();
+      return;
+    }
+
+    if (active.answered >= active.config.questionCount) {
+      this.finishSession();
+      return;
+    }
+
+    if (view.current?.reason === 'retry') {
+      active.retries = active.retries.filter((item) => item.factKey !== view.current!.key);
+    }
+    const chosen = choosePracticeFact({
+      tables: active.config.tables,
+      facts: this.data.facts,
+      recent: active.recent,
+      retries: active.retries,
+      answered: active.answered,
+      introduced: active.introduced,
+    });
+    if (!this.data.facts[chosen.key]) active.introduced += 1;
+    const asDivision = active.config.includeDivision &&
+      chosen.reason !== 'retry' &&
+      (this.data.facts[chosen.key]?.independentCorrect ?? 0) > 0 &&
+      Math.random() < 0.4;
+    view.current = { ...chosen, presented: presentQuestion(chosen.factorA, chosen.factorB, asDivision) };
+    view.phase = 'answer';
+    view.input = '';
+    view.questionStartedAt = Date.now();
+  }
+
+  private finishSession(): void {
+    const active = this.data.activeSession;
+    if (!active) return;
+    this.clearTransition();
+    const result = sessionResult(active, null);
+    this.data.testHistory = [...this.data.testHistory, result].slice(-100);
+    this.data.activeSession = null;
+    this.latestResult = result;
+    this.session = null;
+    this.screen = 'result';
+    this.persist();
+  }
+
+  // --- Answers --------------------------------------------------------------
+
+  private currentInput(): string | null {
+    if (this.screen !== 'session' || !this.session) return null;
+    if (['try', 'answer', 'correction'].includes(this.session.phase)) return this.session.input;
+    return null;
+  }
+
+  private setCurrentInput(value: string): void {
+    if (this.session) this.session.input = value;
   }
 
   private appendAnswer(digit: string): void {
@@ -1199,229 +1182,121 @@ export class App {
     this.render();
   }
 
-  private currentInput(): string | null {
-    if (this.screen === 'practice' && this.practice && ['answer', 'correction'].includes(this.practice.phase)) return this.practice.input;
-    if (this.screen === 'learn' && this.learn && !['explain', 'complete'].includes(this.learn.phase)) return this.learn.input;
-    if (this.screen === 'test' && this.data.activeTest && !this.resumePrompt && !this.abandonPrompt) return this.testInput;
-    return null;
-  }
-
-  private setCurrentInput(value: string): void {
-    if (this.screen === 'practice' && this.practice) this.practice.input = value;
-    if (this.screen === 'learn' && this.learn) this.learn.input = value;
-    if (this.screen === 'test') this.testInput = value;
-  }
-
   private submitCurrentAnswer(): void {
     const input = this.currentInput();
     if (!input) return;
     const answer = Number(input);
-    if (this.screen === 'practice') this.submitPracticeAnswer(answer);
-    if (this.screen === 'learn') this.submitLearnAnswer(answer);
-    if (this.screen === 'test') this.submitTestAnswer(answer);
+    if (this.session?.phase === 'try') {
+      this.submitWarmUpAnswer(answer);
+    } else {
+      this.submitQuestionAnswer(answer);
+    }
   }
 
-  private submitLearnAnswer(answer: number): void {
-    if (!this.learn) return;
-    const state = this.learn;
-    const correctAnswer = state.fact.answer;
-    const responseMs = Math.max(200, Date.now() - state.questionStartedAt);
+  private submitWarmUpAnswer(answer: number): void {
+    const active = this.data.activeSession;
+    const view = this.session;
+    if (!active || !view || !view.warmFact) return;
+    const fact = view.warmFact;
+    const responseMs = Math.max(200, Date.now() - view.questionStartedAt);
 
-    if (state.phase === 'guided') {
-      this.updateFact(state.fact, answer === correctAnswer, false, responseMs, state.id, 'learn');
-      state.input = '';
-      if (answer === correctAnswer) {
-        if (this.data.settings.soundEnabled) playAnswerSound(true);
-        state.phase = 'independent';
-        state.questionStartedAt = Date.now();
-      } else {
-        if (this.data.settings.soundEnabled) playAnswerSound(false);
-        state.phase = 'guided-correction';
-      }
-      this.persist();
+    if (answer !== fact.answer) {
+      if (this.data.settings.soundEnabled) playAnswerSound(false);
+      view.warmMissed = true;
+      view.input = '';
       this.render();
       return;
     }
 
-    if (state.phase === 'guided-correction') {
-      if (answer !== correctAnswer) {
-        if (this.data.settings.soundEnabled) playAnswerSound(false);
-        state.input = '';
-        this.render();
-        return;
-      }
-      this.updateFact(state.fact, true, false, responseMs, state.id, 'learn');
-      state.input = '';
-      state.phase = 'independent';
-      state.questionStartedAt = Date.now();
-      if (this.data.settings.soundEnabled) playAnswerSound(true);
-      this.persist();
-      this.render();
-      return;
+    this.updateFact(fact, true, false, responseMs, active.id, 'learn');
+    if (this.data.settings.soundEnabled) playAnswerSound(true);
+    active.warmUpQueue = active.warmUpQueue.slice(1);
+    view.warmMissed = false;
+    view.input = '';
+    if (active.warmUpQueue.length) {
+      view.warmFact = parseFactKey(active.warmUpQueue[0]);
+      view.phase = 'look';
+      view.questionStartedAt = Date.now();
+    } else {
+      view.warmFact = null;
+      this.nextQuestion();
     }
-
-    if (state.phase === 'independent') {
-      const correct = answer === correctAnswer;
-      this.updateFact(state.fact, correct, true, responseMs, state.id, 'learn');
-      state.input = '';
-      if (this.data.settings.soundEnabled) playAnswerSound(correct);
-      if (correct) {
-        state.independentCorrect = true;
-        this.completeLearn();
-      } else {
-        state.phase = 'correction';
-        this.persist();
-        this.render();
-      }
-      return;
-    }
-
-    if (state.phase === 'correction') {
-      if (answer !== correctAnswer) {
-        if (this.data.settings.soundEnabled) playAnswerSound(false);
-        state.input = '';
-        this.render();
-        return;
-      }
-      this.updateFact(state.fact, true, false, responseMs, state.id, 'learn');
-      if (this.data.settings.soundEnabled) playAnswerSound(true);
-      this.completeLearn();
-    }
-  }
-
-  private completeLearn(): void {
-    if (!this.learn || this.learn.completed) return;
-    this.learn.completed = true;
-    this.learn.phase = 'complete';
-    const summary: PracticeSessionSummary = {
-      id: this.learn.id,
-      mode: 'learn',
-      startedAt: this.learn.startedAt,
-      finishedAt: Date.now(),
-      answered: 1,
-      independentCorrect: this.learn.independentCorrect ? 1 : 0,
-      target: 1,
-      factKeys: [this.learn.fact.key],
-    };
-    this.data.practiceHistory = [...this.data.practiceHistory, summary].slice(-100);
     this.persist();
     this.render();
   }
 
-  private submitPracticeAnswer(answer: number): void {
-    if (!this.practice) return;
-    const state = this.practice;
-    const descriptor = parseFactKey(state.current.key);
-    const correctAnswer = descriptor.answer;
-    const responseMs = Math.max(200, Date.now() - state.questionStartedAt);
+  private submitQuestionAnswer(answer: number): void {
+    const active = this.data.activeSession;
+    const view = this.session;
+    if (!active || !view || !view.current) return;
+    const current = view.current;
+    const presented = current.presented;
+    const responseMs = Math.max(200, Date.now() - view.questionStartedAt);
 
-    if (state.phase === 'answer') {
-      const correct = answer === correctAnswer;
-      this.updateFact(descriptor, correct, true, responseMs, state.id, 'practice');
-      state.answered += 1;
-      state.factKeys.push(descriptor.key);
-      state.recent.push(descriptor.key);
-      state.recent = state.recent.slice(-6);
-      state.input = '';
+    if (view.phase === 'answer') {
+      const correct = answer === presented.answer;
+      this.updateFact(current, correct, true, responseMs, active.id, 'practice');
+      active.answered += 1;
+      if (correct) active.correct += 1;
+      active.records = [...active.records, {
+        id: `${active.id}-${active.records.length}`,
+        factKey: current.key,
+        kind: presented.kind,
+        left: presented.left,
+        right: presented.right,
+        operator: presented.operator,
+        answer: presented.answer,
+        given: answer,
+        correct,
+        responseMs,
+      }];
+      active.recent = [...active.recent, current.key].slice(-10);
+      view.input = '';
       if (correct) {
-        state.correct += 1;
-        state.phase = 'right';
+        view.phase = 'right';
       } else {
-        state.phase = 'correction';
-        if (state.fixQueue !== null) {
-          state.fixQueue = [...state.fixQueue, descriptor.key];
+        view.phase = 'correction';
+        if (active.fixQueue !== null) {
+          active.fixQueue = [...active.fixQueue.slice(1), current.key];
         } else {
-          state.retries = scheduleRetry(state.retries, descriptor.key, state.answered);
+          active.retries = scheduleRetry(active.retries, current.key, active.answered);
         }
+      }
+      if (active.fixQueue !== null && correct) {
+        active.fixQueue = active.fixQueue.slice(1);
       }
       if (this.data.settings.soundEnabled) playAnswerSound(correct);
       this.persist();
-      if (correct) this.afterFeedback(480, () => this.advancePractice());
+      if (correct) this.afterFeedback(480, () => this.advanceSession());
       this.render();
       return;
     }
 
-    if (state.phase === 'correction') {
-      if (answer !== correctAnswer) {
-        state.input = '';
+    if (view.phase === 'correction') {
+      if (answer !== presented.answer) {
+        view.input = '';
         if (this.data.settings.soundEnabled) playAnswerSound(false);
         this.render();
         return;
       }
-      this.updateFact(descriptor, true, false, responseMs, state.id, 'practice');
-      state.input = '';
-      state.phase = 'corrected';
+      this.updateFact(current, true, false, responseMs, active.id, 'practice');
+      view.input = '';
+      view.phase = 'corrected';
       if (this.data.settings.soundEnabled) playAnswerSound(true);
       this.persist();
-      this.afterFeedback(650, () => this.advancePractice());
+      this.afterFeedback(650, () => this.advanceSession());
       this.render();
     }
   }
 
-  private advancePractice(): void {
-    if (!this.practice) return;
-    const state = this.practice;
-
-    if (state.fixQueue !== null) {
-      const nextKey = state.fixQueue[0];
-      if (!nextKey) {
-        this.finishPractice();
-        this.render();
-        return;
-      }
-      state.fixQueue = state.fixQueue.slice(1);
-      state.current = { ...parseFactKey(nextKey), reason: 'retry' };
-      state.input = '';
-      state.phase = 'answer';
-      state.questionStartedAt = Date.now();
-      this.render();
-      return;
-    }
-
-    if (state.target !== null && state.answered >= state.target) {
-      this.finishPractice();
-      this.render();
-      return;
-    }
-    if (state.current.reason === 'retry') {
-      state.retries = state.retries.filter((item) => item.factKey !== state.current.key);
-    }
-    state.current = choosePracticeFact({
-      tables: this.data.settings.activeTables,
-      facts: this.data.facts,
-      recent: state.recent,
-      retries: state.retries,
-      answered: state.answered,
-    });
-    state.input = '';
-    state.phase = 'answer';
-    state.questionStartedAt = Date.now();
+  private advanceSession(): void {
+    if (!this.data.activeSession && this.session?.phase !== 'done') return;
+    this.nextQuestion();
     this.render();
   }
 
-  private finishPractice(): void {
-    if (!this.practice || this.practice.completed) return;
-    this.clearTransition();
-    this.practice.completed = true;
-    this.practice.phase = 'complete';
-    if (this.practice.answered > 0) {
-      const summary: PracticeSessionSummary = {
-        id: this.practice.id,
-        mode: 'practice',
-        startedAt: this.practice.startedAt,
-        finishedAt: Date.now(),
-        answered: this.practice.answered,
-        independentCorrect: this.practice.correct,
-        target: this.practice.target,
-        factKeys: [...new Set(this.practice.factKeys)],
-      };
-      this.data.practiceHistory = [...this.data.practiceHistory, summary].slice(-100);
-      this.persist();
-    }
-  }
-
   private updateFact(
-    descriptor: FactDescriptor,
+    descriptor: Pick<FactDescriptor, 'key' | 'factorA' | 'factorB'>,
     correct: boolean,
     independent: boolean,
     responseMs: number,
@@ -1438,175 +1313,83 @@ export class App {
     });
   }
 
-  private startTest(config: TestConfig, presetName: string | null): void {
-    if (!config.tables.length) {
-      this.showToast('Choose at least one table');
-      return;
-    }
-    const cleanConfig: TestConfig = {
-      ...config,
-      tables: [...new Set(config.tables)].sort((a, b) => a - b),
-      questionCount: clamp(Math.round(config.questionCount), 1, 100),
-      passValue: config.passMode === 'count'
-        ? clamp(Math.round(config.passValue), 1, config.questionCount)
-        : clamp(Math.round(config.passValue), 1, 100),
-    };
-    const seed = createSeed();
-    const active: ActiveTest = {
-      id: this.makeId('test'),
-      presetName,
-      config: cleanConfig,
-      seed,
-      startedAt: Date.now(),
-      questions: generateTestQuestions(cleanConfig, seed),
-      answers: [],
-    };
-    this.data.activeTest = active;
-    this.latestResult = null;
-    this.testInput = '';
-    this.testQuestionStartedAt = Date.now();
-    this.resumePrompt = false;
-    this.abandonPrompt = false;
-    this.screen = 'test';
-    this.persist();
-    this.render();
-  }
+  // --- Settings -------------------------------------------------------------
 
-  private submitTestAnswer(answer: number): void {
-    const active = this.data.activeTest;
-    if (!active) return;
-    const question = active.questions[active.answers.length];
-    const responseMs = Math.max(200, Date.now() - this.testQuestionStartedAt);
-    this.data.activeTest = answerTest(active, answer, responseMs);
-    if (question) {
-      this.updateFact(parseFactKey(question.factKey), answer === question.answer, true, responseMs, active.id, 'test');
-    }
-    this.testInput = '';
-    if (this.data.activeTest.answers.length === this.data.activeTest.questions.length) {
-      const result = finishTest(this.data.activeTest);
-      this.data.testHistory = [...this.data.testHistory, result].slice(-100);
-      this.data.activeTest = null;
-      this.latestResult = result;
-      this.screen = 'test-result';
-    } else {
-      this.testQuestionStartedAt = Date.now();
-    }
-    this.persist();
-    this.render();
-  }
-
-  private confirmAbandon(): void {
-    const active = this.data.activeTest;
-    if (active) {
-      this.data.testHistory = [...this.data.testHistory, abandonTest(active)].slice(-100);
-      this.data.activeTest = null;
-      this.persist();
-    }
-    this.abandonPrompt = false;
-    this.resumePrompt = false;
-    this.screen = 'home';
-    this.render();
-  }
-
-  private startPreset(id: string): void {
-    const preset = this.data.presets.find((item) => item.id === id);
-    if (preset) this.startTest(preset.config, preset.name);
-  }
-
-  private toggleTable(table: number, context: string): void {
+  private toggleTable(table: number): void {
     if (!ALL_TABLES.includes(table)) return;
-    const current = context === 'test' ? this.draftTest.tables : this.data.settings.activeTables;
+    const current = this.data.settings.activeTables;
     if (current.includes(table) && current.length === 1) {
       this.showToast('Keep at least one table selected');
       return;
     }
     const next = current.includes(table) ? current.filter((item) => item !== table) : [...current, table].sort((a, b) => a - b);
-    if (context === 'test') {
-      this.draftTest.tables = next;
-    } else {
-      this.data.settings.activeTables = next;
-      if (!next.includes(this.progressTable)) this.progressTable = next[0];
-      this.touchSettings();
-      this.persist();
-    }
+    this.data.settings.activeTables = next;
+    if (!next.includes(this.progressTable)) this.progressTable = next[0];
+    this.touchSettings();
+    this.persist();
     this.render();
   }
 
-  private setTableGroup(group: string, context: string): void {
+  private setTableGroup(group: string): void {
     const tables = group === 'core'
       ? [...CORE_TABLES]
       : group === 'beyond'
         ? [...BEYOND_CORE_TABLES]
         : [...ALL_TABLES];
-    if (context === 'test') {
-      this.draftTest.tables = tables;
-    } else {
-      this.data.settings.activeTables = tables;
-      if (!tables.includes(this.progressTable)) this.progressTable = tables[0];
-      this.touchSettings();
-      this.persist();
-    }
-    this.render();
-  }
-
-  private setPracticeTarget(value: string): void {
-    this.data.settings.practiceTarget = value === 'open' ? null : Number(value) as 10 | 20 | 30;
+    this.data.settings.activeTables = tables;
+    if (!tables.includes(this.progressTable)) this.progressTable = tables[0];
     this.touchSettings();
     this.persist();
     this.render();
   }
 
-  private setTestCount(count: number): void {
-    if (![20, 50, 100].includes(count)) return;
-    const previousCount = this.draftTest.questionCount;
-    this.draftTest.questionCount = count;
-    if (this.draftTest.passMode === 'count' && previousCount !== count) {
+  private setSessionCount(count: number): void {
+    if (!QUESTION_COUNTS.includes(count)) return;
+    const session = this.data.settings.session;
+    const previousCount = session.questionCount;
+    session.questionCount = count;
+    if (session.passMode === 'count' && previousCount !== count) {
       // Keep the pass bar the same proportion rather than clamping 48/50 into
       // a silent 20/20 perfect-score requirement.
-      this.draftTest.passValue = clamp(Math.round(this.draftTest.passValue / previousCount * count), 1, count);
+      session.passValue = clamp(Math.round(session.passValue / previousCount * count), 1, count);
     }
+    this.touchSettings();
+    this.persist();
     this.render();
   }
 
-  private setPassMode(mode: TestConfig['passMode']): void {
-    if (mode === this.draftTest.passMode) return;
+  private setPassMode(mode: SessionConfig['passMode']): void {
+    const session = this.data.settings.session;
+    if (mode === session.passMode) return;
     if (mode === 'percent') {
-      this.draftTest.passValue = Math.round(this.draftTest.passValue / this.draftTest.questionCount * 100);
+      session.passValue = Math.round(session.passValue / session.questionCount * 100);
     } else {
-      this.draftTest.passValue = Math.ceil(this.draftTest.questionCount * this.draftTest.passValue / 100);
+      session.passValue = Math.ceil(session.questionCount * session.passValue / 100);
     }
-    this.draftTest.passMode = mode;
+    session.passMode = mode;
+    this.touchSettings();
+    this.persist();
     this.render();
   }
 
   private stepPass(amount: number): void {
-    const max = this.draftTest.passMode === 'count' ? this.draftTest.questionCount : 100;
-    this.draftTest.passValue = clamp(this.draftTest.passValue + amount, 1, max);
-    this.render();
-  }
-
-  private savePreset(): void {
-    const name = window.prompt('Preset name', 'My test')?.trim();
-    if (!name) return;
-    this.data.presets = [
-      ...this.data.presets,
-      {
-        id: this.makeId('preset'),
-        name: name.slice(0, 40),
-        config: { ...this.draftTest, tables: [...this.draftTest.tables] },
-      },
-    ];
-    this.touchSettings();
-    this.persist();
-    this.showToast('Preset saved');
-  }
-
-  private deletePreset(id: string): void {
-    this.data.presets = this.data.presets.filter((preset) => preset.id !== id || BUILTIN_PRESET_IDS.includes(preset.id));
+    const session = this.data.settings.session;
+    const max = session.passMode === 'count' ? session.questionCount : 100;
+    session.passValue = clamp(session.passValue + amount, 1, max);
     this.touchSettings();
     this.persist();
     this.render();
   }
+
+  private setWarmUpCount(count: number): void {
+    if (!WARM_UP_COUNTS.includes(count)) return;
+    this.data.settings.session.warmUpCount = count;
+    this.touchSettings();
+    this.persist();
+    this.render();
+  }
+
+  // --- Data -----------------------------------------------------------------
 
   private downloadBackup(): void {
     const blob = new Blob([exportData(this.data)], { type: 'application/json' });
@@ -1627,10 +1410,10 @@ export class App {
     }
     this.data = resetData();
     this.progressTable = this.data.settings.activeTables[0];
-    this.draftTest = { ...defaultTestConfig(), tables: [...this.data.settings.activeTables] };
     this.resetPrompt = false;
     this.parentTab = 'settings';
     this.syncStatus = 'idle';
+    this.session = null;
     this.persist();
     this.showToast('Progress reset');
     if (sync) {
@@ -1730,6 +1513,7 @@ export class App {
       if (remote.fromNewerApp) throw new SyncError('Update this device first: the family data comes from a newer app.');
       let merged = remote.payload ? mergePayloads(toPayload(this.data), remote.payload) : toPayload(this.data);
       this.data = applyPayload(this.data, merged);
+      this.data.settings = ensureSettings(this.data.settings);
       saveData(this.data);
 
       if (!remote.payload || !samePayload(merged, remote.payload)) {
@@ -1743,6 +1527,7 @@ export class App {
           version = remote.version;
           merged = remote.payload ? mergePayloads(merged, remote.payload) : merged;
           this.data = applyPayload(this.data, merged);
+          this.data.settings = ensureSettings(this.data.settings);
           saveData(this.data);
         }
       }

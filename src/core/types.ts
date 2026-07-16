@@ -32,6 +32,7 @@ export interface FactProgress {
   recentAttempts: FactAttempt[];
 }
 
+/** Legacy summaries from the separate practice mode; kept for old backups and older devices on the same family code. */
 export interface PracticeSessionSummary {
   id: string;
   mode: 'learn' | 'practice';
@@ -53,6 +54,7 @@ export interface TestConfig {
   includeDivision: boolean;
 }
 
+/** Legacy named test configs; kept in stored data so older devices on the same family code keep working. */
 export interface TestPreset {
   id: string;
   name: string;
@@ -77,16 +79,6 @@ export interface TestAnswer {
   responseMs: number;
 }
 
-export interface ActiveTest {
-  id: string;
-  presetName: string | null;
-  config: TestConfig;
-  seed: number;
-  startedAt: number;
-  questions: TestQuestion[];
-  answers: TestAnswer[];
-}
-
 export interface TestResult {
   id: string;
   presetName: string | null;
@@ -100,10 +92,52 @@ export interface TestResult {
   questions: TestQuestion[];
 }
 
+/** How each session runs: an optional warm-up, then the scored questions. */
+export interface SessionConfig {
+  questionCount: number;
+  passMode: 'count' | 'percent';
+  passValue: number;
+  includeDivision: boolean;
+  warmUpCount: number;
+}
+
 export interface Settings {
   activeTables: number[];
-  practiceTarget: 10 | 20 | 30 | null;
+  session: SessionConfig;
   soundEnabled: boolean;
+}
+
+/** One asked-and-answered question inside a session. */
+export interface SessionRecord {
+  id: string;
+  factKey: FactKey;
+  kind: QuestionKind;
+  left: number;
+  right: number;
+  operator: '×' | '÷';
+  answer: number;
+  given: number;
+  correct: boolean;
+  responseMs: number;
+}
+
+/**
+ * A session in progress, persisted after every answer so a closed tab can be
+ * resumed (or recorded honestly as abandoned).
+ */
+export interface ActiveSession {
+  id: string;
+  startedAt: number;
+  config: TestConfig;
+  warmUpQueue: FactKey[];
+  answered: number;
+  correct: number;
+  introduced: number;
+  recent: FactKey[];
+  retries: RetryItem[];
+  records: SessionRecord[];
+  /** Non-null when fixing test misses: remaining facts, re-queued until answered independently. */
+  fixQueue: FactKey[] | null;
 }
 
 export interface SyncSettings {
@@ -112,7 +146,7 @@ export interface SyncSettings {
 }
 
 export interface AppData {
-  version: 4;
+  version: 5;
   settings: Settings;
   settingsUpdatedAt: number;
   sync: SyncSettings | null;
@@ -120,7 +154,7 @@ export interface AppData {
   practiceHistory: PracticeSessionSummary[];
   testHistory: TestResult[];
   presets: TestPreset[];
-  activeTest: ActiveTest | null;
+  activeSession: ActiveSession | null;
 }
 
 export interface RetryItem {

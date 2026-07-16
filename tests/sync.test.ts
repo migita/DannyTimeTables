@@ -9,7 +9,7 @@ import {
   type SyncPayload,
 } from '../src/core/sync';
 import type {
-  ActiveTest,
+  ActiveSession,
   AppData,
   FactProgress,
   PracticeSessionSummary,
@@ -55,22 +55,22 @@ function makeFact(key: string, overrides: Partial<FactProgress>): FactProgress {
 
 describe('sync payload', () => {
   it('never uploads device-local state', () => {
-    const activeTest = { id: 'test-1' } as unknown as ActiveTest;
-    const data = makeData({ sync: { familyCode: 'a-long-family-code', lastSyncedAt: 5 }, activeTest });
+    const activeSession = { id: 'session-1' } as unknown as ActiveSession;
+    const data = makeData({ sync: { familyCode: 'a-long-family-code', lastSyncedAt: 5 }, activeSession });
     const payload = toPayload(data) as unknown as Record<string, unknown>;
 
-    expect(payload.activeTest).toBeUndefined();
+    expect(payload.activeSession).toBeUndefined();
     expect(payload.sync).toBeUndefined();
   });
 
-  it('keeps local credentials and an in-progress test when applying a merged payload', () => {
-    const activeTest = { id: 'test-1' } as unknown as ActiveTest;
-    const data = makeData({ sync: { familyCode: 'a-long-family-code', lastSyncedAt: 5 }, activeTest });
+  it('keeps local credentials and an in-progress session when applying a merged payload', () => {
+    const activeSession = { id: 'session-1' } as unknown as ActiveSession;
+    const data = makeData({ sync: { familyCode: 'a-long-family-code', lastSyncedAt: 5 }, activeSession });
     const incoming = toPayload(makeData({ testHistory: [makeResult('r1', 1000)] }));
 
     const applied = applyPayload(data, incoming);
     expect(applied.sync).toEqual({ familyCode: 'a-long-family-code', lastSyncedAt: 5 });
-    expect(applied.activeTest).toBe(activeTest);
+    expect(applied.activeSession).toBe(activeSession);
     expect(applied.testHistory.map((result) => result.id)).toEqual(['r1']);
   });
 });

@@ -1,10 +1,13 @@
 import { ALL_TABLES, CORE_TABLES } from './facts';
 import { MIN_FAMILY_CODE_LENGTH } from './sync';
-import type { AppData, FactProgress, SyncSettings, TestConfig } from './types';
+import type { ActiveSession, AppData, FactProgress, SessionConfig, Settings, SyncSettings, TestConfig } from './types';
 
 export const STORAGE_KEY = 'danny-times-tables:data';
-export const DATA_VERSION = 4;
+export const DATA_VERSION = 5;
 export const BUILTIN_PRESET_IDS = ['screen-time-test', 'restaurant-test'];
+
+export const QUESTION_COUNTS = [10, 20, 30, 50];
+export const WARM_UP_COUNTS = [0, 2, 3, 5];
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -12,7 +15,17 @@ export interface StorageLike {
   removeItem(key: string): void;
 }
 
-export function defaultTestConfig(): TestConfig {
+export function defaultSessionConfig(): SessionConfig {
+  return {
+    questionCount: 20,
+    passMode: 'count',
+    passValue: 18,
+    includeDivision: false,
+    warmUpCount: 3,
+  };
+}
+
+function defaultTestConfig(): TestConfig {
   return {
     tables: [...CORE_TABLES],
     questionCount: 50,
@@ -41,7 +54,7 @@ export function createDefaultData(): AppData {
     version: DATA_VERSION,
     settings: {
       activeTables: [...ALL_TABLES],
-      practiceTarget: 20,
+      session: defaultSessionConfig(),
       soundEnabled: false,
     },
     settingsUpdatedAt: 0,
@@ -57,7 +70,7 @@ export function createDefaultData(): AppData {
         config: defaultTestConfig(),
       },
     ],
-    activeTest: null,
+    activeSession: null,
   };
 }
 
@@ -95,6 +108,45 @@ export function importData(text: string): AppData {
   return normaliseData(parsed);
 }
 
+/**
+ * Fill and clamp the settings object. Also used after applying a sync payload
+ * from an older device, whose settings will not carry a session block.
+ */
+export function ensureSettings(value: unknown): Settings {
+  const defaults = createDefaultData().settings;
+  const settings = isRecord(value) ? value : {};
+  const activeTables = numberArray(settings.activeTables).filter(validTable);
+  return {
+    activeTables: activeTables.length
+      ? [...new Set(activeTables)].sort((a, b) => a - b)
+      : defaults.activeTables,
+    session: normaliseSessionConfig(settings.session),
+    soundEnabled: typeof settings.soundEnabled === 'boolean' ? settings.soundEnabled : defaults.soundEnabled,
+  };
+}
+
+function normaliseSessionConfig(value: unknown, fallback: SessionConfig = defaultSessionConfig()): SessionConfig {
+  if (!isRecord(value)) return { ...fallback };
+  const questionCount = closestOf(Number(value.questionCount), QUESTION_COUNTS, fallback.questionCount);
+  const passMode: SessionConfig['passMode'] = value.passMode === 'percent' ? 'percent' : 'count';
+  const rawPass = Number(value.passValue);
+  const passValue = Number.isFinite(rawPass)
+    ? Math.min(passMode === 'count' ? questionCount : 100, Math.max(1, Math.round(rawPass)))
+    : fallback.passValue;
+  return {
+    questionCount,
+    passMode,
+    passValue,
+    includeDivision: typeof value.includeDivision === 'boolean' ? value.includeDivision : fallback.includeDivision,
+    warmUpCount: closestOf(Number(value.warmUpCount), WARM_UP_COUNTS, fallback.warmUpCount),
+  };
+}
+
+function closestOf(value: number, options: number[], fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return options.reduce((best, option) => (Math.abs(option - value) < Math.abs(best - value) ? option : best));
+}
+
 function normaliseData(value: unknown): AppData {
   if (!isRecord(value)) throw new Error('The backup does not contain app data.');
   const version = Number(value.version);
@@ -102,27 +154,27 @@ function normaliseData(value: unknown): AppData {
   if (version > DATA_VERSION) throw new Error('This backup was made by a newer version of the app.');
 
   const defaults = createDefaultData();
-  const settings = isRecord(value.settings) ? value.settings : {};
-  const activeTables = numberArray(settings.activeTables).filter(validTable);
-  const migratedActiveTables = version === 1 && sameTables(activeTables, CORE_TABLES)
-    ? [...ALL_TABLES]
-    : activeTables;
-  const practiceTarget = settings.practiceTarget === null || [10, 20, 30].includes(Number(settings.practiceTarget))
-    ? settings.practiceTarget as 10 | 20 | 30 | null
-    : defaults.settings.practiceTarget;
+  const rawSettings = isRecord(value.settings) ? value.settings : {};
+  const settings = ensureSettings(rawSettings);
+  if (version === 1 && sameTables(settings.activeTables, CORE_TABLES)) {
+    settings.activeTables = [...ALL_TABLES];
+  }
+  const presets = normalisePresets(value.presets, version, defaults.presets);
+  if (version < 5 && !isRecord(rawSettings.session)) {
+    // The session replaces the separate test presets; seed it from the family's
+    // screen-time gate so the pass bar carries over.
+    const gate = presets.find((preset) => preset.id === 'screen-time-test') ?? presets[0];
+    if (gate) {
+      settings.session = normaliseSessionConfig({ ...gate.config, warmUpCount: defaults.settings.session.warmUpCount });
+    }
+  }
   const facts = isRecord(value.facts)
     ? Object.fromEntries(Object.entries(value.facts).filter((entry): entry is [string, FactProgress] => validFact(entry[1])))
     : {};
 
   return {
     version: DATA_VERSION,
-    settings: {
-      activeTables: migratedActiveTables.length
-        ? [...new Set(migratedActiveTables)].sort((a, b) => a - b)
-        : defaults.settings.activeTables,
-      practiceTarget,
-      soundEnabled: typeof settings.soundEnabled === 'boolean' ? settings.soundEnabled : defaults.settings.soundEnabled,
-    },
+    settings,
     settingsUpdatedAt: Number.isFinite(Number(value.settingsUpdatedAt)) && Number(value.settingsUpdatedAt) > 0
       ? Number(value.settingsUpdatedAt)
       : 0,
@@ -130,8 +182,8 @@ function normaliseData(value: unknown): AppData {
     facts,
     practiceHistory: Array.isArray(value.practiceHistory) ? value.practiceHistory.slice(-100) as AppData['practiceHistory'] : [],
     testHistory: Array.isArray(value.testHistory) ? value.testHistory.slice(-100) as AppData['testHistory'] : [],
-    presets: normalisePresets(value.presets, version, defaults.presets),
-    activeTest: isRecord(value.activeTest) ? value.activeTest as unknown as AppData['activeTest'] : null,
+    presets,
+    activeSession: validActiveSession(value.activeSession) ? value.activeSession : null,
   };
 }
 
@@ -181,5 +233,20 @@ function validFact(value: unknown): value is FactProgress {
     Number.isFinite(value.attempts) &&
     Number.isFinite(value.independentCorrect) &&
     Array.isArray(value.recentAttempts)
+  );
+}
+
+function validActiveSession(value: unknown): value is ActiveSession {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    isRecord(value.config) &&
+    Array.isArray((value.config as Record<string, unknown>).tables) &&
+    Array.isArray(value.warmUpQueue) &&
+    Array.isArray(value.recent) &&
+    Array.isArray(value.retries) &&
+    Array.isArray(value.records) &&
+    Number.isFinite(value.answered) &&
+    Number.isFinite(value.correct)
   );
 }

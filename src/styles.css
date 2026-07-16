@@ -212,6 +212,17 @@ p {
   box-shadow: var(--shadow);
 }
 
+.mode-grid.single-mode {
+  grid-template-columns: 1fr;
+}
+
+.mode-grid.single-mode .mode-card {
+  min-height: 150px;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: 1fr;
+  align-items: center;
+}
+
 .mode-card > svg {
   align-self: end;
   width: 24px;
