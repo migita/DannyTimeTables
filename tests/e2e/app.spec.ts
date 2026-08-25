@@ -35,9 +35,11 @@ async function completeWarmUp(page: Page): Promise<void> {
 
 async function openParentSettings(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Grown-up area' }).click();
-  const hold = page.getByRole('button', { name: 'Press and hold' });
-  await hold.focus();
-  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Enter the code' })).toBeVisible();
+  // The grown-up code is today's date as MMDD on the device clock; the browser shares this machine's clock.
+  const now = new Date();
+  const pin = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  for (const digit of pin) await page.locator(`[data-action="pin-key"][data-key="${digit}"]`).click();
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 }
@@ -196,6 +198,24 @@ test('a timed question that runs out counts as a miss and is corrected', async (
   await waitForQuestionReady(page);
   await expect(page.getByText('2 / 20')).toBeVisible();
   await expect(page.locator('.time-track.is-running')).toBeVisible();
+});
+
+test('the grown-up area needs today\'s date as a code and rejects wrong ones', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Grown-up area' }).click();
+  await expect(page.getByRole('heading', { name: 'Enter the code' })).toBeVisible();
+  await expect(page.getByText('Hint: MMDD')).toBeVisible();
+  const now = new Date();
+  const pin = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  // A wrong four-digit code (today's date with the last digit changed) keeps the gate closed.
+  const wrong = pin.slice(0, 3) + String((Number(pin[3]) + 1) % 10);
+  for (const digit of wrong) await page.locator(`[data-action="pin-key"][data-key="${digit}"]`).click();
+  await expect(page.getByText('That’s not it — try again.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Enter the code' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Settings' })).toHaveCount(0);
+  // The physical keyboard works too, and the right code opens the area.
+  await page.keyboard.type(pin);
+  await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
 });
 
 test('a grown-up can configure tables and the session in settings', async ({ page }) => {

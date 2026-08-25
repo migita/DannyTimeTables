@@ -66,6 +66,13 @@ import {
 } from './ui/components';
 
 type Screen = 'home' | 'session' | 'result' | 'parent';
+
+const PIN_LENGTH = 4;
+
+/** The grown-up code is today's date as MMDD (device clock), so it changes daily and nothing needs storing. */
+export function parentPin(now = new Date()): string {
+  return `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+}
 type ParentTab = 'progress' | 'settings';
 type SessionPhase = 'look' | 'try' | 'answer' | 'right' | 'correction' | 'corrected' | 'done';
 
@@ -91,12 +98,13 @@ export class App {
   private session: SessionView | null = null;
   private latestResult: TestResult | null = null;
   private gateOpen = false;
+  private pinInput = '';
+  private pinWrong = false;
   private resumePrompt = false;
   private abandonPrompt = false;
   private resetPrompt = false;
   private factDialogKey: FactKey | null = null;
   private toast = '';
-  private holdTimer: number | null = null;
   private transitionTimer: number | null = null;
   private questionTimer: number | null = null;
   private toastTimer: number | null = null;
@@ -113,9 +121,6 @@ export class App {
 
     this.root.addEventListener('click', (event) => this.handleClick(event));
     this.root.addEventListener('change', (event) => void this.handleChange(event));
-    this.root.addEventListener('pointerdown', (event) => this.handlePointerDown(event));
-    window.addEventListener('pointerup', () => this.cancelParentHold());
-    window.addEventListener('pointercancel', () => this.cancelParentHold());
     window.addEventListener('keydown', (event) => this.handleKeydown(event));
     window.addEventListener('online', () => void this.syncNow());
     document.addEventListener('visibilitychange', () => {
@@ -165,14 +170,20 @@ export class App {
         break;
       case 'open-parent-gate':
         this.gateOpen = true;
+        this.pinInput = '';
+        this.pinWrong = false;
         this.render();
         break;
       case 'close-gate':
-        this.gateOpen = false;
-        this.render();
+        this.closeGate();
         break;
-      case 'hold-parent':
-        if ((event as MouseEvent).detail === 0) this.unlockParent();
+      case 'pin-key':
+        this.appendPin(target.dataset.key ?? '');
+        break;
+      case 'pin-backspace':
+        this.pinInput = this.pinInput.slice(0, -1);
+        this.pinWrong = false;
+        this.render();
         break;
       case 'home':
         this.goHome();
@@ -317,20 +328,21 @@ export class App {
     }
   }
 
-  private handlePointerDown(event: PointerEvent): void {
-    const button = (event.target as HTMLElement).closest<HTMLElement>('[data-action="hold-parent"]');
-    if (!button) return;
-    button.classList.add('is-holding');
-    this.holdTimer = window.setTimeout(() => this.unlockParent(), 1600);
-  }
-
-  private cancelParentHold(): void {
-    if (this.holdTimer !== null) window.clearTimeout(this.holdTimer);
-    this.holdTimer = null;
-    this.root.querySelector('[data-action="hold-parent"]')?.classList.remove('is-holding');
-  }
-
   private handleKeydown(event: KeyboardEvent): void {
+    if (this.gateOpen) {
+      if (/^\d$/.test(event.key)) {
+        event.preventDefault();
+        this.appendPin(event.key);
+      } else if (event.key === 'Backspace') {
+        event.preventDefault();
+        this.pinInput = this.pinInput.slice(0, -1);
+        this.pinWrong = false;
+        this.render();
+      } else if (event.key === 'Escape') {
+        this.closeGate();
+      }
+      return;
+    }
     if (this.hasBlockingOverlay()) return;
     const element = event.target as HTMLElement;
     if (element.matches('input, textarea, select')) return;
@@ -883,8 +895,17 @@ export class App {
             <button class="modal-close" type="button" data-action="close-gate" aria-label="Close">${icon('x')}</button>
             <span class="modal-symbol">${icon('lock-keyhole')}</span>
             <p class="eyebrow">Grown-ups</p>
-            <h2 id="gate-title">Hold to open</h2>
-            <button class="hold-button" type="button" data-action="hold-parent"><span>${icon('lock-keyhole')} Press and hold</span><i></i></button>
+            <h2 id="gate-title">Enter the code</h2>
+            <div class="pin-dots ${this.pinWrong ? 'is-wrong' : ''}" role="status" aria-label="${this.pinWrong ? 'Wrong code, try again' : `${this.pinInput.length} of ${PIN_LENGTH} digits entered`}">
+              ${Array.from({ length: PIN_LENGTH }, (_, index) => `<i class="${index < this.pinInput.length ? 'filled' : ''}"></i>`).join('')}
+            </div>
+            <p class="pin-hint">${this.pinWrong ? 'That’s not it — try again.' : 'Hint: MMDD'}</p>
+            <div class="keypad pin-keypad" aria-label="Code keypad">
+              ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((number) => `<button class="key" type="button" data-action="pin-key" data-key="${number}">${number}</button>`).join('')}
+              <span></span>
+              <button class="key" type="button" data-action="pin-key" data-key="0">0</button>
+              <button class="key key-icon" type="button" data-action="pin-backspace" aria-label="Delete last digit" ${this.pinInput ? '' : 'disabled'}>${icon('delete')}</button>
+            </div>
           </section>
         </div>
       `);
@@ -977,9 +998,34 @@ export class App {
     `;
   }
 
-  private unlockParent(): void {
-    this.cancelParentHold();
+  private closeGate(): void {
     this.gateOpen = false;
+    this.pinInput = '';
+    this.pinWrong = false;
+    this.render();
+  }
+
+  private appendPin(digit: string): void {
+    if (!this.gateOpen || !/^\d$/.test(digit) || this.pinInput.length >= PIN_LENGTH) return;
+    this.pinInput += digit;
+    this.pinWrong = false;
+    if (this.pinInput.length < PIN_LENGTH) {
+      this.render();
+      return;
+    }
+    if (this.pinInput === parentPin()) {
+      this.unlockParent();
+      return;
+    }
+    this.pinInput = '';
+    this.pinWrong = true;
+    this.render();
+  }
+
+  private unlockParent(): void {
+    this.gateOpen = false;
+    this.pinInput = '';
+    this.pinWrong = false;
     this.parentTab = 'progress';
     this.screen = 'parent';
     this.render();
