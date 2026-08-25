@@ -26,10 +26,12 @@ npm run test:e2e
 
 ## Product structure
 
-- **Learn** uses groups, arrays, doubles, fives, and tens before asking for an independent answer. A guided correction never counts as mastery.
-- **Practice** targets facts near useful retrieval difficulty. Recent mistakes return after 3–5 intervening questions, while stable facts are checked less often.
-- **Just Test** generates a balanced, fixed-difficulty sequence. It hides correctness during the run, persists every answer, and records abandoned tests separately from passes and failures. Test answers feed the memory model, the result screen shows the finish time, and missed questions can be fixed immediately in a short retype-and-recall round. A built-in "Screen time" preset (20 questions, pass 18, core tables) matches a typical school test.
-- **Grown-ups** can choose any tables from 1–12, inspect prompt-level history, save test presets, export/import a versioned backup, and reset local data.
+One child-facing flow, started with a single **Start** button:
+
+- **Warm-up** (off, 2, 3 or 5 facts) shows the facts most in need — new ones first, then shaky ones — with a visual explanation (groups, arrays, doubles, fives, tens), typed once with guidance. A guided answer never counts as mastery.
+- **Questions** are a scored session (10/20/30/50 questions, configurable pass mark, optional related division) drawn from the adaptive scheduler: new facts arrive steadily, a fact never repeats within eight questions unless it was missed, and a missed fact returns 3–5 questions later after a retype correction. The score counts first answers only and ends in **PASS / NOT YET**, with a "Fix the misses" follow-up round.
+- **Time per question** (off, 3, 6 or 10 s) adds a draining countdown under each scored question. Running out of time counts as a miss: it is corrected like any other, scheduled for retry, and shown with a clock in the missed list. Warm-up and fix-the-misses rounds are never timed, and the clock pauses while the app is hidden or the end-session prompt is open.
+- **Grown-ups** can choose any tables from 1–12 (settings drive every session), inspect fact-level history, export/import a versioned backup, and reset local data.
 
 The memory model and test generator are pure TypeScript modules under [`src/core`](src/core). The browser interface is kept in [`src/app.ts`](src/app.ts), and local persistence is isolated in [`src/core/storage.ts`](src/core/storage.ts).
 

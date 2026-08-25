@@ -20,11 +20,13 @@ import {
   presentQuestion,
   requiredCorrect,
   sessionResult,
+  timeLimitMs,
   warmUpRetries,
   type PresentedQuestion,
 } from './core/session';
 import {
   QUESTION_COUNTS,
+  TIME_LIMITS,
   WARM_UP_COUNTS,
   ensureSettings,
   exportData,
@@ -75,6 +77,10 @@ interface SessionView {
   current: (ScheduledFact & { presented: PresentedQuestion }) | null;
   input: string;
   questionStartedAt: number;
+  /** Set while the question clock is stopped (tab hidden, or the end-session prompt is open). */
+  pausedAt: number | null;
+  /** The current question was settled by the time limit rather than an answer. */
+  timedOut: boolean;
 }
 
 export class App {
@@ -92,6 +98,7 @@ export class App {
   private toast = '';
   private holdTimer: number | null = null;
   private transitionTimer: number | null = null;
+  private questionTimer: number | null = null;
   private toastTimer: number | null = null;
   private syncStatus: 'idle' | 'syncing' | 'ok' | 'offline' | 'error' = 'idle';
   private syncBusy = false;
@@ -113,6 +120,10 @@ export class App {
     window.addEventListener('online', () => void this.syncNow());
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') this.flushPendingSync();
+      if (this.screen === 'session' && this.session) {
+        this.syncQuestionClock();
+        this.render();
+      }
     });
     this.render();
     if (this.data.sync) void this.syncNow();
@@ -211,6 +222,9 @@ export class App {
       case 'set-warmup':
         this.setWarmUpCount(Number(target.dataset.value));
         break;
+      case 'set-time-limit':
+        this.setTimeLimit(Number(target.dataset.value));
+        break;
       case 'toggle-sound':
         this.data.settings.soundEnabled = !this.data.settings.soundEnabled;
         this.touchSettings();
@@ -247,6 +261,7 @@ export class App {
         break;
       case 'cancel-abandon':
         this.abandonPrompt = false;
+        this.syncQuestionClock();
         this.render();
         break;
       case 'confirm-abandon':
@@ -368,7 +383,7 @@ export class App {
           <button class="mode-card practice-card" type="button" data-action="start-session">
             <span class="mode-visual target-visual" aria-hidden="true"><b>${session.questionCount}</b></span>
             <span class="mode-copy">
-              <small>${session.warmUpCount > 0 ? 'Warm-up, then ' : ''}${session.questionCount} questions · ${needed} to pass</small>
+              <small>${session.warmUpCount > 0 ? 'Warm-up, then ' : ''}${session.questionCount} questions · ${needed} to pass${session.timeLimitSeconds ? ` · ${session.timeLimitSeconds} s each` : ''}</small>
               <strong>Start</strong>
             </span>
             ${icon('chevron-right')}
@@ -486,6 +501,7 @@ export class App {
     const correctionCopy = presented.kind === 'division'
       ? `<p><strong>${presented.left} shared into ${presented.right}s makes ${presented.answer}</strong><span>Type ${presented.answer}</span></p>`
       : `<p><strong>${current.factorA} groups of ${current.factorB} make ${presented.answer}</strong><span>Type the correct answer</span></p>`;
+    const limitMs = timeLimitMs(active.config);
 
     return `
       <main class="child-shell practice-shell question-shell">
@@ -502,11 +518,31 @@ export class App {
             <span>${presented.left} ${presented.operator} ${presented.right}</span><span>=</span>
             <output aria-label="Your answer">${view.phase === 'right' ? presented.answer : view.input || '?'}</output>
           </div>
+          ${limitMs ? this.renderTimeTrack(limitMs, active, view) : ''}
           ${view.phase === 'right' ? '<p class="answer-feedback right-feedback" role="status">Yes</p>' : ''}
+          ${view.phase === 'correction' && view.timedOut ? '<p class="answer-feedback timeout-feedback" role="status">Out of time</p>' : ''}
           ${view.phase === 'corrected' ? '<p class="answer-feedback right-feedback" role="status">That’s it</p>' : ''}
         </section>
         ${renderKeypad(view.input, feedback)}
       </main>
+    `;
+  }
+
+  /**
+   * The countdown is a CSS animation started at a negative delay, so it stays
+   * in the right place across the full re-render every keypress causes. Once
+   * the question is settled the bar freezes where the answer landed.
+   */
+  private renderTimeTrack(limitMs: number, active: ActiveSession, view: SessionView): string {
+    const answering = view.phase === 'answer';
+    const elapsed = answering
+      ? (view.pausedAt ?? Date.now()) - view.questionStartedAt
+      : active.records.at(-1)?.responseMs ?? 0;
+    const offset = clamp(elapsed, 0, limitMs);
+    return `
+      <div class="time-track ${answering && view.pausedAt === null ? 'is-running' : ''}" aria-hidden="true">
+        <span style="animation-duration:${limitMs}ms;animation-delay:-${offset}ms"></span>
+      </div>
     `;
   }
 
@@ -525,6 +561,7 @@ export class App {
     if (!result || result.status === 'abandoned') return this.renderHome();
     const passed = result.status === 'passed';
     const needed = requiredCorrect(result.config);
+    const limit = result.config.timeLimitSeconds ?? 0;
     const missed = result.questions.filter((question) => {
       const answer = result.answers.find((item) => item.questionId === question.id);
       return answer && !answer.correct;
@@ -537,7 +574,7 @@ export class App {
           <span class="result-stamp">${passed ? icon('shield-check') : icon('rotate-ccw')}</span>
           <p class="result-word">${passed ? 'PASS' : 'NOT YET'}</p>
           <h1>${result.correct} / ${result.config.questionCount} correct</h1>
-          <p class="pass-line">Pass mark ${needed}</p>
+          <p class="pass-line">Pass mark ${needed}${limit ? ` · ${limit} s per question` : ''}</p>
           <p class="result-time">Finished ${formatDate(result.finishedAt)}</p>
         </section>
         <section class="result-details">
@@ -551,7 +588,10 @@ export class App {
               <summary>Review ${missed.length} missed ${missed.length === 1 ? 'question' : 'questions'}</summary>
               <div>${missed.map((question) => {
                 const answer = result.answers.find((item) => item.questionId === question.id)!;
-                return `<p><span>${question.left} ${question.operator} ${question.right}</span><s>${answer.answer}</s><strong>${question.answer}</strong></p>`;
+                const given = answer.answer === null
+                  ? `<span class="out-of-time" role="img" aria-label="Out of time">${icon('clock-3')}</span>`
+                  : `<s>${answer.answer}</s>`;
+                return `<p><span>${question.left} ${question.operator} ${question.right}</span>${given}<strong>${question.answer}</strong></p>`;
               }).join('')}</div>
             </details>
           ` : ''}
@@ -679,7 +719,7 @@ export class App {
         ${recentlySecure.length ? `<div class="slow-row"><span>Recently secure</span>${recentlySecure.map((fact) => `<button type="button" data-action="inspect-fact" data-key="${fact.key}">${fact.factorA}×${fact.factorB}</button>`).join('')}</div>` : ''}
         <details class="how-it-works">
           <summary>${icon('info')} How sessions choose questions</summary>
-          <p>Each session warms up the facts most in need, then asks questions aimed near 75% recall. New facts arrive steadily (about one in four questions while any remain), a fact never repeats within eight questions unless it was missed, and a missed fact returns after 3–5 questions. The score counts first answers only.</p>
+          <p>Each session warms up the facts most in need, then asks questions aimed near 75% recall. New facts arrive steadily (about one in four questions while any remain), a fact never repeats within eight questions unless it was missed, and a missed fact returns after 3–5 questions. The score counts first answers only; with a time limit on, running out of time counts as a miss.</p>
         </details>
       </section>
 
@@ -693,7 +733,7 @@ export class App {
           return `
             <div class="activity-item">
               <span class="activity-icon ${passed ? 'passed-icon' : 'failed-icon'}">${passed ? icon('check') : result.status === 'abandoned' ? icon('pause') : icon('x')}</span>
-              <p><strong>${label}</strong><span>${result.config.tables.join(', ')} tables · ${formatAgo(result.finishedAt)}</span></p>
+              <p><strong>${label}</strong><span>${result.config.tables.join(', ')} tables${result.config.timeLimitSeconds ? ` · ${result.config.timeLimitSeconds} s` : ''} · ${formatAgo(result.finishedAt)}</span></p>
             </div>
           `;
         }).join('') : '<p class="empty-copy">No sessions yet.</p>'}
@@ -725,6 +765,12 @@ export class App {
           <div class="form-label"><strong>Questions</strong></div>
           <div class="segmented-control four-segments">
             ${QUESTION_COUNTS.map((count) => `<button type="button" class="${session.questionCount === count ? 'active' : ''}" data-action="set-session-count" data-value="${count}">${count}</button>`).join('')}
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="form-label"><strong>Time per question</strong><span>${session.timeLimitSeconds ? 'out of time counts as a miss' : 'no limit'}</span></div>
+          <div class="segmented-control four-segments">
+            ${TIME_LIMITS.map((seconds) => `<button type="button" class="${session.timeLimitSeconds === seconds ? 'active' : ''}" data-action="set-time-limit" data-value="${seconds}">${seconds === 0 ? 'Off' : `${seconds} s`}</button>`).join('')}
           </div>
         </div>
         <div class="form-split">
@@ -940,7 +986,7 @@ export class App {
   }
 
   private goHome(): void {
-    this.clearTransition();
+    this.clearSessionTimers();
     this.screen = 'home';
     this.session = null;
     this.latestResult = null;
@@ -950,7 +996,7 @@ export class App {
   // --- Session flow ---------------------------------------------------------
 
   private startSession(): void {
-    this.clearTransition();
+    this.clearSessionTimers();
     const settings = this.data.settings;
     const warmUp = pickWarmUpFacts(settings.activeTables, this.data.facts, settings.session.warmUpCount);
     const active: ActiveSession = {
@@ -962,6 +1008,7 @@ export class App {
         passMode: settings.session.passMode,
         passValue: settings.session.passValue,
         includeDivision: settings.session.includeDivision,
+        timeLimitSeconds: settings.session.timeLimitSeconds,
       },
       warmUpQueue: warmUp.map((fact) => fact.key),
       answered: 0,
@@ -984,6 +1031,8 @@ export class App {
       current: null,
       input: '',
       questionStartedAt: Date.now(),
+      pausedAt: null,
+      timedOut: false,
     };
     this.screen = 'session';
     if (!warmUp.length) {
@@ -994,7 +1043,7 @@ export class App {
   }
 
   private startFixSession(result: TestResult): void {
-    this.clearTransition();
+    this.clearSessionTimers();
     const missedKeys = [...new Set(result.questions
       .filter((question) => {
         const answer = result.answers.find((item) => item.questionId === question.id);
@@ -1007,7 +1056,8 @@ export class App {
     this.data.activeSession = {
       id: this.makeId('session'),
       startedAt: Date.now(),
-      config: { ...result.config, tables: [...result.config.tables] },
+      // Fixing is about getting the fact right, not fast, so the round is never timed.
+      config: { ...result.config, tables: [...result.config.tables], timeLimitSeconds: 0 },
       warmUpQueue: [],
       answered: 0,
       correct: 0,
@@ -1025,6 +1075,8 @@ export class App {
       current: null,
       input: '',
       questionStartedAt: Date.now(),
+      pausedAt: null,
+      timedOut: false,
     };
     this.screen = 'session';
     this.nextQuestion();
@@ -1048,6 +1100,8 @@ export class App {
       current: null,
       input: '',
       questionStartedAt: Date.now(),
+      pausedAt: null,
+      timedOut: false,
     };
     this.screen = 'session';
     if (active.warmUpQueue.length) {
@@ -1071,10 +1125,12 @@ export class App {
       return;
     }
     this.abandonPrompt = true;
+    this.syncQuestionClock();
     this.render();
   }
 
   private confirmAbandon(): void {
+    this.clearSessionTimers();
     const active = this.data.activeSession;
     if (active) {
       if (active.fixQueue === null && active.answered > 0) {
@@ -1094,6 +1150,7 @@ export class App {
     const active = this.data.activeSession;
     const view = this.session;
     if (!active || !view) return;
+    view.timedOut = false;
 
     if (active.fixQueue !== null) {
       const nextKey = active.fixQueue[0];
@@ -1110,9 +1167,7 @@ export class App {
         reason: 'retry',
         presented: presentQuestion(fact.factorA, fact.factorB, false),
       };
-      view.phase = 'answer';
-      view.input = '';
-      view.questionStartedAt = Date.now();
+      this.openQuestion(view);
       return;
     }
 
@@ -1121,9 +1176,6 @@ export class App {
       return;
     }
 
-    if (view.current?.reason === 'retry') {
-      active.retries = active.retries.filter((item) => item.factKey !== view.current!.key);
-    }
     const chosen = choosePracticeFact({
       tables: active.config.tables,
       facts: this.data.facts,
@@ -1138,15 +1190,21 @@ export class App {
       (this.data.facts[chosen.key]?.independentCorrect ?? 0) > 0 &&
       Math.random() < 0.4;
     view.current = { ...chosen, presented: presentQuestion(chosen.factorA, chosen.factorB, asDivision) };
+    this.openQuestion(view);
+  }
+
+  private openQuestion(view: SessionView): void {
     view.phase = 'answer';
     view.input = '';
     view.questionStartedAt = Date.now();
+    view.pausedAt = null;
+    this.syncQuestionClock();
   }
 
   private finishSession(): void {
     const active = this.data.activeSession;
     if (!active) return;
-    this.clearTransition();
+    this.clearSessionTimers();
     const result = sessionResult(active, null);
     this.data.testHistory = [...this.data.testHistory, result].slice(-100);
     this.data.activeSession = null;
@@ -1228,67 +1286,121 @@ export class App {
   }
 
   private submitQuestionAnswer(answer: number): void {
+    if (this.session?.phase === 'answer') this.settleQuestion(answer);
+    else if (this.session?.phase === 'correction') this.settleCorrection(answer);
+  }
+
+  /** The first answer to a question: a typed number, or null when the time limit ran out. */
+  private settleQuestion(given: number | null): void {
     const active = this.data.activeSession;
     const view = this.session;
-    if (!active || !view || !view.current) return;
+    if (!active || !view || !view.current || view.phase !== 'answer') return;
+    this.clearQuestionTimer();
     const current = view.current;
     const presented = current.presented;
-    const responseMs = Math.max(200, Date.now() - view.questionStartedAt);
+    const correct = given === presented.answer;
+    const responseMs = given === null
+      ? timeLimitMs(active.config)
+      : Math.max(200, Date.now() - view.questionStartedAt);
 
-    if (view.phase === 'answer') {
-      const correct = answer === presented.answer;
-      this.updateFact(current, correct, true, responseMs, active.id, 'practice');
-      active.answered += 1;
-      if (correct) active.correct += 1;
-      active.records = [...active.records, {
-        id: `${active.id}-${active.records.length}`,
-        factKey: current.key,
-        kind: presented.kind,
-        left: presented.left,
-        right: presented.right,
-        operator: presented.operator,
-        answer: presented.answer,
-        given: answer,
-        correct,
-        responseMs,
-      }];
-      active.recent = [...active.recent, current.key].slice(-10);
+    this.updateFact(current, correct, true, responseMs, active.id, 'practice');
+    active.answered += 1;
+    if (correct) active.correct += 1;
+    active.records = [...active.records, {
+      id: `${active.id}-${active.records.length}`,
+      factKey: current.key,
+      kind: presented.kind,
+      left: presented.left,
+      right: presented.right,
+      operator: presented.operator,
+      answer: presented.answer,
+      given,
+      correct,
+      responseMs,
+    }];
+    active.recent = [...active.recent, current.key].slice(-10);
+    view.input = '';
+    view.timedOut = given === null;
+    view.phase = correct ? 'right' : 'correction';
+    if (active.fixQueue !== null) {
+      active.fixQueue = correct ? active.fixQueue.slice(1) : [...active.fixQueue.slice(1), current.key];
+    } else if (correct) {
+      active.retries = active.retries.filter((item) => item.factKey !== current.key);
+    } else {
+      active.retries = scheduleRetry(active.retries, current.key, active.answered);
+    }
+    if (this.data.settings.soundEnabled) playAnswerSound(correct);
+    this.persist();
+    if (correct) this.afterFeedback(480, () => this.advanceSession());
+    this.render();
+  }
+
+  private settleCorrection(answer: number): void {
+    const active = this.data.activeSession;
+    const view = this.session;
+    if (!active || !view || !view.current || view.phase !== 'correction') return;
+    const current = view.current;
+    if (answer !== current.presented.answer) {
       view.input = '';
-      if (correct) {
-        view.phase = 'right';
-      } else {
-        view.phase = 'correction';
-        if (active.fixQueue !== null) {
-          active.fixQueue = [...active.fixQueue.slice(1), current.key];
-        } else {
-          active.retries = scheduleRetry(active.retries, current.key, active.answered);
-        }
-      }
-      if (active.fixQueue !== null && correct) {
-        active.fixQueue = active.fixQueue.slice(1);
-      }
-      if (this.data.settings.soundEnabled) playAnswerSound(correct);
-      this.persist();
-      if (correct) this.afterFeedback(480, () => this.advanceSession());
+      if (this.data.settings.soundEnabled) playAnswerSound(false);
       this.render();
       return;
     }
+    const responseMs = Math.max(200, Date.now() - view.questionStartedAt);
+    this.updateFact(current, true, false, responseMs, active.id, 'practice');
+    view.input = '';
+    view.phase = 'corrected';
+    if (this.data.settings.soundEnabled) playAnswerSound(true);
+    this.persist();
+    this.afterFeedback(650, () => this.advanceSession());
+    this.render();
+  }
 
-    if (view.phase === 'correction') {
-      if (answer !== presented.answer) {
-        view.input = '';
-        if (this.data.settings.soundEnabled) playAnswerSound(false);
-        this.render();
-        return;
-      }
-      this.updateFact(current, true, false, responseMs, active.id, 'practice');
-      view.input = '';
-      view.phase = 'corrected';
-      if (this.data.settings.soundEnabled) playAnswerSound(true);
-      this.persist();
-      this.afterFeedback(650, () => this.advanceSession());
-      this.render();
+  // --- Question clock -------------------------------------------------------
+
+  /**
+   * Keeps the per-question clock in step with what the child can actually
+   * see: it stops while the tab is hidden or a prompt covers the question,
+   * and the hidden time is not charged to the answer.
+   */
+  private syncQuestionClock(): void {
+    const view = this.session;
+    if (!view) return;
+    const canRun = document.visibilityState === 'visible' && !this.hasBlockingOverlay();
+    if (!canRun) {
+      view.pausedAt ??= Date.now();
+      this.clearQuestionTimer();
+      return;
     }
+    if (view.pausedAt !== null) {
+      view.questionStartedAt += Date.now() - view.pausedAt;
+      view.pausedAt = null;
+    }
+    this.armQuestionTimer();
+  }
+
+  private armQuestionTimer(): void {
+    this.clearQuestionTimer();
+    const active = this.data.activeSession;
+    const view = this.session;
+    if (!active || !view || view.phase !== 'answer') return;
+    const limitMs = timeLimitMs(active.config);
+    if (!limitMs) return;
+    const remaining = Math.max(0, limitMs - (Date.now() - view.questionStartedAt));
+    this.questionTimer = window.setTimeout(() => {
+      this.questionTimer = null;
+      this.settleQuestion(null);
+    }, remaining);
+  }
+
+  private clearQuestionTimer(): void {
+    if (this.questionTimer !== null) window.clearTimeout(this.questionTimer);
+    this.questionTimer = null;
+  }
+
+  private clearSessionTimers(): void {
+    this.clearTransition();
+    this.clearQuestionTimer();
   }
 
   private advanceSession(): void {
@@ -1391,6 +1503,14 @@ export class App {
     this.render();
   }
 
+  private setTimeLimit(seconds: number): void {
+    if (!TIME_LIMITS.includes(seconds)) return;
+    this.data.settings.session.timeLimitSeconds = seconds;
+    this.touchSettings();
+    this.persist();
+    this.render();
+  }
+
   // --- Data -----------------------------------------------------------------
 
   private downloadBackup(): void {
@@ -1415,6 +1535,7 @@ export class App {
     this.resetPrompt = false;
     this.parentTab = 'settings';
     this.syncStatus = 'idle';
+    this.clearSessionTimers();
     this.session = null;
     this.persist();
     this.showToast('Progress reset');

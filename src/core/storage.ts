@@ -8,6 +8,8 @@ export const BUILTIN_PRESET_IDS = ['screen-time-test', 'restaurant-test'];
 
 export const QUESTION_COUNTS = [10, 20, 30, 50];
 export const WARM_UP_COUNTS = [0, 2, 3, 5];
+/** Seconds per question; 6 matches the pace of the Year 4 multiplication tables check. */
+export const TIME_LIMITS = [0, 3, 6, 10];
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -22,6 +24,7 @@ export function defaultSessionConfig(): SessionConfig {
     passValue: 18,
     includeDivision: false,
     warmUpCount: 3,
+    timeLimitSeconds: 0,
   };
 }
 
@@ -139,6 +142,7 @@ function normaliseSessionConfig(value: unknown, fallback: SessionConfig = defaul
     passValue,
     includeDivision: typeof value.includeDivision === 'boolean' ? value.includeDivision : fallback.includeDivision,
     warmUpCount: closestOf(Number(value.warmUpCount), WARM_UP_COUNTS, fallback.warmUpCount),
+    timeLimitSeconds: closestOf(Number(value.timeLimitSeconds), TIME_LIMITS, fallback.timeLimitSeconds),
   };
 }
 

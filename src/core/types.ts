@@ -52,6 +52,8 @@ export interface TestConfig {
   passMode: 'count' | 'percent';
   passValue: number;
   includeDivision: boolean;
+  /** Seconds allowed per question; 0 or absent (results from before 2.1.0) means untimed. */
+  timeLimitSeconds?: number;
 }
 
 /** Legacy named test configs; kept in stored data so older devices on the same family code keep working. */
@@ -74,7 +76,8 @@ export interface TestQuestion {
 
 export interface TestAnswer {
   questionId: string;
-  answer: number;
+  /** Null when the time limit ran out before anything was submitted. */
+  answer: number | null;
   correct: boolean;
   responseMs: number;
 }
@@ -99,6 +102,8 @@ export interface SessionConfig {
   passValue: number;
   includeDivision: boolean;
   warmUpCount: number;
+  /** Seconds allowed per scored question; 0 means untimed. */
+  timeLimitSeconds: number;
 }
 
 export interface Settings {
@@ -116,7 +121,8 @@ export interface SessionRecord {
   right: number;
   operator: '×' | '÷';
   answer: number;
-  given: number;
+  /** Null when the time limit ran out before anything was submitted. */
+  given: number | null;
   correct: boolean;
   responseMs: number;
 }

@@ -10,12 +10,12 @@ describe('versioned storage', () => {
   it('round-trips all settings and progress', () => {
     const data = createDefaultData();
     data.settings.activeTables = [3, 7];
-    data.settings.session = { questionCount: 30, passMode: 'percent', passValue: 90, includeDivision: true, warmUpCount: 5 };
+    data.settings.session = { questionCount: 30, passMode: 'percent', passValue: 90, includeDivision: true, warmUpCount: 5, timeLimitSeconds: 6 };
 
     const imported = importData(exportData(data));
     expect(imported.version).toBe(5);
     expect(imported.settings.activeTables).toEqual([3, 7]);
-    expect(imported.settings.session).toEqual({ questionCount: 30, passMode: 'percent', passValue: 90, includeDivision: true, warmUpCount: 5 });
+    expect(imported.settings.session).toEqual({ questionCount: 30, passMode: 'percent', passValue: 90, includeDivision: true, warmUpCount: 5, timeLimitSeconds: 6 });
     expect(imported.presets.map((preset) => preset.name)).toEqual(['Screen time', 'Restaurant test']);
   });
 
@@ -42,6 +42,7 @@ describe('versioned storage', () => {
       passValue: 17,
       includeDivision: false,
       warmUpCount: 3,
+      timeLimitSeconds: 0,
     });
     expect(imported.settings.activeTables).toEqual([2, 3, 4, 5, 10]);
   });
@@ -78,13 +79,21 @@ describe('versioned storage', () => {
 
   it('clamps a malformed session config to supported values', () => {
     const data = createDefaultData() as unknown as Record<string, unknown>;
-    (data.settings as Record<string, unknown>).session = { questionCount: 23, passMode: 'weird', passValue: 900, warmUpCount: 9 };
+    (data.settings as Record<string, unknown>).session = { questionCount: 23, passMode: 'weird', passValue: 900, warmUpCount: 9, timeLimitSeconds: 4 };
 
     const imported = importData(JSON.stringify(data));
     expect(imported.settings.session.questionCount).toBe(20);
     expect(imported.settings.session.passMode).toBe('count');
     expect(imported.settings.session.passValue).toBe(20);
     expect(imported.settings.session.warmUpCount).toBe(5);
+    expect(imported.settings.session.timeLimitSeconds).toBe(3);
+  });
+
+  it('leaves sessions untimed when the time limit is missing or unusable', () => {
+    const session = { questionCount: 20, passMode: 'count', passValue: 18, includeDivision: false, warmUpCount: 3 };
+    expect(ensureSettings({ activeTables: [2], session }).session.timeLimitSeconds).toBe(0);
+    expect(ensureSettings({ activeTables: [2], session: { ...session, timeLimitSeconds: 'fast' } }).session.timeLimitSeconds).toBe(0);
+    expect(ensureSettings({ activeTables: [2], session: { ...session, timeLimitSeconds: 99 } }).session.timeLimitSeconds).toBe(10);
   });
 
   it('fills a settings object from an older device with session defaults', () => {
@@ -93,6 +102,7 @@ describe('versioned storage', () => {
     expect(settings.soundEnabled).toBe(true);
     expect(settings.session.questionCount).toBe(20);
     expect(settings.session.warmUpCount).toBe(3);
+    expect(settings.session.timeLimitSeconds).toBe(0);
   });
 
   it('respects a deliberate Screen time deletion in version 4 data', () => {

@@ -7,8 +7,12 @@ async function enterNumber(page: Page, value: number): Promise<void> {
   await page.locator('[data-action="submit-answer"]').click();
 }
 
+async function readExpression(page: Page): Promise<string> {
+  return (await page.locator('.equation > span').first().innerText()).replaceAll(' ', '');
+}
+
 async function currentAnswer(page: Page): Promise<number> {
-  const expression = (await page.locator('.equation > span').first().innerText()).replaceAll(' ', '');
+  const expression = await readExpression(page);
   if (expression.includes('×')) {
     const [left, right] = expression.split('×').map(Number);
     return left * right;
@@ -38,11 +42,20 @@ async function openParentSettings(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 }
 
-async function disableWarmUp(page: Page): Promise<void> {
+async function disableWarmUp(page: Page, timeLimitSeconds = 0): Promise<void> {
   await openParentSettings(page);
   await page.locator('[data-action="set-warmup"][data-value="0"]').click();
+  await page.locator(`[data-action="set-time-limit"][data-value="${timeLimitSeconds}"]`).click();
   await page.getByRole('button', { name: 'Home' }).click();
   await expect(page.getByRole('heading', { name: 'Ready, Daniel?' })).toBeVisible();
+}
+
+/** Answer wrong on purpose, then complete the correction so the session moves on. */
+async function missOnPurpose(page: Page, answer: number): Promise<void> {
+  await enterNumber(page, answer === 1 ? 2 : answer - 1);
+  await expect(page.getByText('Type the correct answer')).toBeVisible();
+  await enterNumber(page, answer);
+  await expect(page.getByText('That’s it')).toBeVisible();
 }
 
 test('home and session controls fit an iPhone viewport', async ({ page }) => {
@@ -124,6 +137,67 @@ test('a mistake requires a correction, is saved, and the fact returns later', as
   await expect(page.getByText('That’s it')).toBeVisible();
 });
 
+test('a fact missed on its retry comes back again within a few questions', async ({ page }) => {
+  await page.goto('/');
+  await disableWarmUp(page);
+  await page.getByRole('button', { name: /Start/ }).click();
+
+  let target = '';
+  const sightings: number[] = [];
+  for (let position = 1; position <= 20 && sightings.length < 3; position += 1) {
+    await waitForQuestionReady(page);
+    const expression = await readExpression(page);
+    const answer = await currentAnswer(page);
+    if (position === 1) target = expression;
+    if (expression !== target) {
+      await enterNumber(page, answer);
+      continue;
+    }
+    sightings.push(position);
+    if (sightings.length < 3) {
+      await missOnPurpose(page, answer);
+    } else {
+      await enterNumber(page, answer);
+    }
+  }
+
+  // A miss brings the fact back 3–5 questions later, including a miss on the
+  // retry itself; the scheduler alone could not re-pick it that soon.
+  expect(sightings).toHaveLength(3);
+  expect(sightings[1] - sightings[0]).toBeLessThanOrEqual(6);
+  expect(sightings[2] - sightings[1]).toBeLessThanOrEqual(6);
+});
+
+test('a timed question that runs out counts as a miss and is corrected', async ({ page }) => {
+  await page.goto('/');
+  await disableWarmUp(page, 3);
+  await expect(page.locator('.mode-copy small')).toContainText('3 s each');
+  await page.getByRole('button', { name: /Start/ }).click();
+
+  await waitForQuestionReady(page);
+  await expect(page.locator('.time-track.is-running')).toBeVisible();
+  const answer = await currentAnswer(page);
+  await expect(page.getByText('Out of time', { exact: true })).toBeVisible({ timeout: 6000 });
+  await expect(page.getByText('Type the correct answer')).toBeVisible();
+
+  const saved = await page.evaluate(() => {
+    const data = JSON.parse(localStorage.getItem('danny-times-tables:data')!);
+    const fact = Object.values(data.facts)[0] as { mistakes: number; independentCorrect: number };
+    return { record: data.activeSession.records[0], mistakes: fact.mistakes, independentCorrect: fact.independentCorrect };
+  });
+  expect(saved.record.given).toBeNull();
+  expect(saved.record.correct).toBe(false);
+  expect(saved.record.responseMs).toBe(3000);
+  expect(saved.mistakes).toBe(1);
+  expect(saved.independentCorrect).toBe(0);
+
+  await enterNumber(page, answer);
+  await expect(page.getByText('That’s it')).toBeVisible();
+  await waitForQuestionReady(page);
+  await expect(page.getByText('2 / 20')).toBeVisible();
+  await expect(page.locator('.time-track.is-running')).toBeVisible();
+});
+
 test('a grown-up can configure tables and the session in settings', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.active-table-row')).toContainText('1–12');
@@ -144,6 +218,12 @@ test('a grown-up can configure tables and the session in settings', async ({ pag
   await expect(page.getByText('9 of 10')).toBeVisible();
   await page.locator('[data-action="set-session-count"][data-value="50"]').click();
   await expect(page.getByText('45 of 50')).toBeVisible();
+
+  await expect(page.getByText('no limit')).toBeVisible();
+  await page.locator('[data-action="set-time-limit"][data-value="6"]').click();
+  await expect(page.getByText('out of time counts as a miss')).toBeVisible();
+  const timeLimit = await page.evaluate(() => JSON.parse(localStorage.getItem('danny-times-tables:data')!).settings.session.timeLimitSeconds);
+  expect(timeLimit).toBe(6);
 });
 
 test('an in-progress session resumes after reload and abandoning is recorded honestly', async ({ page }) => {

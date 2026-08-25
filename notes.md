@@ -1,6 +1,28 @@
 # Danny Times — notes
 
-**Date:** 2026-07-16 · **App version:** 2.0.0 (data schema v5)
+**Date:** 2026-08-25 · **App version:** 2.1.0 (data schema v5)
+
+## 2.1.0 — timed questions (2026-08-25)
+
+Settings → Each session → **Time per question**: Off / 3 s / 6 s / 10 s (6 s is
+the pace of the Year 4 multiplication tables check; the list is `TIME_LIMITS` in
+`src/core/storage.ts`). A draining bar sits under the equation. Running out counts
+as a miss — recorded with `given: null`, corrected with the usual retype, retried
+3–5 questions later — and shows as a clock in the result's missed list. Warm-up
+and fix-the-misses rounds are never timed. The clock pauses while the tab is
+hidden or the "End session?" prompt is open, so an interruption is not charged to
+the answer.
+
+Also fixed: a fact missed again *on its retry* was never re-queued. The app
+removed the retry entry when moving to the next question, after the miss had
+already rescheduled it, so the second retry was silently dropped — unlike the
+simulator the v2 scheduler was validated with. Retries now clear on a correct
+first answer and reschedule on a miss.
+
+Back-compat: schema stays v5 and the sync payload stays version 1.
+`timeLimitSeconds` is additive and back-filled to 0 by `ensureSettings`, so
+older devices keep working; until updated they show a struck-through "null" for a
+timed-out answer in the missed list.
 
 ## What this is
 

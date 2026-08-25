@@ -813,6 +813,54 @@ p {
   color: var(--practice-dark);
 }
 
+.timeout-feedback {
+  color: var(--test-dark);
+}
+
+/* Per-question countdown. The fill is a paused animation scrubbed to the
+   elapsed time by a negative delay (set inline), so a re-render never resets
+   it; only the answer phase lets it run. */
+.time-track {
+  width: min(100%, 360px);
+  height: 10px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #e4e9e4;
+}
+
+.time-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--practice);
+  transform-origin: left center;
+  animation: time-drain linear forwards paused;
+}
+
+.time-track.is-running span {
+  animation-play-state: running;
+}
+
+@keyframes time-drain {
+  0% {
+    transform: scaleX(1);
+    background: var(--practice);
+  }
+
+  60% {
+    background: var(--practice);
+  }
+
+  85% {
+    background: var(--learn);
+  }
+
+  100% {
+    transform: scaleX(0);
+    background: var(--test);
+  }
+}
+
 .complete-shell {
   display: grid;
   grid-template-rows: auto 1fr;
@@ -1813,8 +1861,19 @@ p {
   font-size: 0.8rem;
 }
 
-.missed-details s {
+.missed-details s,
+.missed-details .out-of-time {
   color: var(--test-dark);
+}
+
+.missed-details .out-of-time {
+  display: inline-flex;
+  align-items: center;
+}
+
+.missed-details .out-of-time svg {
+  width: 1.1em;
+  height: 1.1em;
 }
 
 .missed-details strong {

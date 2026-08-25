@@ -15,6 +15,12 @@ export function requiredCorrect(config: Pick<TestConfig, 'questionCount' | 'pass
   return Math.min(config.questionCount, Math.max(0, Math.round(config.passValue)));
 }
 
+/** Per-question time limit in milliseconds; 0 when the session is untimed. */
+export function timeLimitMs(config: Pick<TestConfig, 'timeLimitSeconds'>): number {
+  const seconds = config.timeLimitSeconds ?? 0;
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : 0;
+}
+
 export interface PresentedQuestion {
   kind: QuestionKind;
   left: number;
