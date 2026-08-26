@@ -18,6 +18,7 @@ import {
 import { choosePracticeFact, pickWarmUpFacts, scheduleRetry, type ScheduledFact } from './core/scheduler';
 import {
   presentQuestion,
+  randomFlip,
   requiredCorrect,
   sessionResult,
   timeLimitMs,
@@ -1211,7 +1212,7 @@ export class App {
       view.current = {
         ...fact,
         reason: 'retry',
-        presented: presentQuestion(fact.factorA, fact.factorB, false),
+        presented: presentQuestion(fact.factorA, fact.factorB, false, randomFlip()),
       };
       this.openQuestion(view);
       return;
@@ -1235,7 +1236,7 @@ export class App {
       chosen.reason !== 'retry' &&
       (this.data.facts[chosen.key]?.independentCorrect ?? 0) > 0 &&
       Math.random() < 0.4;
-    view.current = { ...chosen, presented: presentQuestion(chosen.factorA, chosen.factorB, asDivision) };
+    view.current = { ...chosen, presented: presentQuestion(chosen.factorA, chosen.factorB, asDivision, randomFlip()) };
     this.openQuestion(view);
   }
 

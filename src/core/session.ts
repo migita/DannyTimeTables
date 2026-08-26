@@ -29,11 +29,22 @@ export interface PresentedQuestion {
   answer: number;
 }
 
-export function presentQuestion(factorA: number, factorB: number, asDivision: boolean): PresentedQuestion {
+/**
+ * A fact is stored as `factorA × table`, but the question is shown with the
+ * factors in either order (`flipped`) so the table number does not always sit
+ * on the right. Division always divides by the table: `product ÷ table`.
+ */
+export function presentQuestion(factorA: number, factorB: number, asDivision: boolean, flipped = false): PresentedQuestion {
   if (asDivision) {
     return { kind: 'division', left: factorA * factorB, right: factorB, operator: '÷', answer: factorA };
   }
-  return { kind: 'multiplication', left: factorA, right: factorB, operator: '×', answer: factorA * factorB };
+  const [left, right] = flipped ? [factorB, factorA] : [factorA, factorB];
+  return { kind: 'multiplication', left, right, operator: '×', answer: factorA * factorB };
+}
+
+/** Random factor order for a multiplication question. */
+export function randomFlip(random = Math.random): boolean {
+  return random() < 0.5;
 }
 
 /**

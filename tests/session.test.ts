@@ -52,6 +52,9 @@ describe('session rules', () => {
   it('presents a fact as multiplication or as the related division', () => {
     expect(presentQuestion(7, 5, false)).toEqual({ kind: 'multiplication', left: 7, right: 5, operator: '×', answer: 35 });
     expect(presentQuestion(7, 5, true)).toEqual({ kind: 'division', left: 35, right: 5, operator: '÷', answer: 7 });
+    expect(presentQuestion(7, 5, false, true)).toEqual({ kind: 'multiplication', left: 5, right: 7, operator: '×', answer: 35 });
+    // Division is never flipped: it always divides by the table.
+    expect(presentQuestion(7, 5, true, true)).toEqual({ kind: 'division', left: 35, right: 5, operator: '÷', answer: 7 });
   });
 
   it('brings warm-up facts back as the first retries, spaced apart', () => {

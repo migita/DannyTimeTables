@@ -11,6 +11,12 @@ async function readExpression(page: Page): Promise<string> {
   return (await page.locator('.equation > span').first().innerText()).replaceAll(' ', '');
 }
 
+/** The factors of a multiplication are shown in random order, so identify a question by its sorted factors. */
+function questionIdentity(expression: string): string {
+  if (!expression.includes('×')) return expression;
+  return expression.split('×').map(Number).sort((a, b) => a - b).join('×');
+}
+
 async function currentAnswer(page: Page): Promise<number> {
   const expression = await readExpression(page);
   if (expression.includes('×')) {
@@ -111,7 +117,7 @@ test('warmed-up facts come back as real questions early in the session', async (
     await waitForQuestionReady(page);
     const expression = (await page.locator('.equation > span').first().innerText()).replaceAll(' ', '');
     const [left, right] = expression.split('×').map(Number);
-    askedKeys.push(`${left}x${right}`);
+    askedKeys.push(`${left}x${right}`, `${right}x${left}`);
     await enterNumber(page, left * right);
   }
   const warmHits = warmedUp.filter((key) => askedKeys.includes(key));
@@ -148,7 +154,7 @@ test('a fact missed on its retry comes back again within a few questions', async
   const sightings: number[] = [];
   for (let position = 1; position <= 20 && sightings.length < 3; position += 1) {
     await waitForQuestionReady(page);
-    const expression = await readExpression(page);
+    const expression = questionIdentity(await readExpression(page));
     const answer = await currentAnswer(page);
     if (position === 1) target = expression;
     if (expression !== target) {
