@@ -1,6 +1,6 @@
 # Danny Times — notes
 
-**Date:** 2026-08-25 · **App version:** 3.0.0 (data schema v5)
+**Date:** 2026-09-05 · **App version:** 3.0.0 (data schema v5)
 
 ## 3.0.0 — teaching, independent checks and retention
 
@@ -98,4 +98,3 @@ live in `tests/simulation.test.ts`.
 Old devices on the same family code keep working: the sync payload shape is
 unchanged (legacy presets/practice history are carried, frozen), and settings from
 older devices are back-filled with session defaults on arrival.
-

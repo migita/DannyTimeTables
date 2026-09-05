@@ -2294,7 +2294,7 @@ p {
   display: grid;
   grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
   gap: 5px;
-  width: min(250px, 64vw);
+  width: min(calc(var(--columns) * 23px - 5px), 250px, 64vw);
   margin: 0 auto;
 }
 .strategy-array b {
@@ -2305,7 +2305,7 @@ p {
   background: #267d74;
 }
 .strategy-array b.second-part { background: #dc9851; }
-.strategy-shell .compact-visual .strategy-array { width: min(150px, 40vw); gap: 3px; }
+.strategy-shell .compact-visual .strategy-array { width: min(calc(var(--columns) * 12px - 3px), 150px, 40vw); gap: 3px; }
 .strategy-prompt, .application-prompt {
   max-width: 32rem;
   margin: 0 auto 16px;
@@ -2328,3 +2328,5 @@ p {
   .strategy-shell .compact-visual .strategy-array { width: 100px; gap: 2px; }
   .check-caption { margin-bottom: 8px; font-size: .85rem; }
 }
+
+.strategy-shell .question-stage { gap: 12px; }

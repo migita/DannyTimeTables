@@ -1,4 +1,4 @@
-import { applicationQuestions, factFromQuestion, makeCheck, practicePool, strategyLesson } from './core/learning';
+import { applicationQuestions, factFromQuestion, makeCheck, practicePool, strategyLesson, wasTaught } from './core/learning';
 import { playAnswerSound } from './core/audio';
 import {
   ALL_TABLES,
@@ -377,7 +377,7 @@ export class App {
     const growing = labelCounts.Remembering + labelCounts.Fast + labelCounts.Secure;
     const finishedSessions = this.data.testHistory.filter((result) => result.status !== 'abandoned').length;
     const needed = requiredCorrect(session);
-    const starting = Object.values(this.data.facts).filter(f => f.independentCorrect > 0 || f.lastTaughtAt !== undefined).length < 6;
+    const starting = activeFacts.filter(f => wasTaught(this.data.facts[f.key])).length < Math.min(6, session.questionCount);
 
     return `
       <main class="home-shell">
@@ -608,7 +608,7 @@ export class App {
         ${learning ? `<section class="learning-summary" aria-label="Learning today">
           <h2>Learning today</h2>
           <p>${learning.taught} ${learning.taught === 1 ? 'fact explored' : 'facts explored'} · ${learning.practiceCorrect}/${learning.practiceAnswered} practice answers</p>
-          <p>${learning.applicationCorrect}/${learning.applicationAnswered} puzzles solved without help</p>
+          <p>${learning.applicationAnswered ? `${learning.applicationCorrect}/${learning.applicationAnswered} puzzles solved without help` : 'Puzzles saved for next time'}</p>
           <small>We will check what you remember on another day.</small>
         </section>` : ''}
         ${missed.length ? `<details class="missed-details"><summary>Review ${missed.length} missed ${missed.length === 1 ? 'question' : 'questions'}</summary><div>
@@ -1525,6 +1525,7 @@ export class App {
       if (key) {
         view.warmFact = parseFactKey(key);
         flow.lesson ??= strategyLesson(key, this.data.facts);
+        this.markExposure(key);
         view.phase = 'look';
         view.input = '';
         view.warmMissed = false;
@@ -1564,6 +1565,7 @@ export class App {
         flow.applicationAnswered = false;
       }
       if (flow.applicationIndex >= flow.applicationQuestions.length) { this.finishLearning(); return; }
+      this.markExposure(flow.applicationQuestions[flow.applicationIndex].factKey);
       view.current = null;
       view.phase = 'application';
       view.input = '';
@@ -1706,6 +1708,12 @@ export class App {
     this.persist();
   }
 
+  private markExposure(key: FactKey): void {
+    const fact = parseFactKey(key);
+    const progress = this.data.facts[key] ?? newFactProgress(key, fact.factorA, fact.factorB);
+    this.data.facts[key] = { ...progress, lastExposedAt: Date.now() };
+  }
+
   private currentTimeLimit(): number {
     const active = this.data.activeSession;
     if (!active || active.fixQueue !== null) return 0;
@@ -1730,7 +1738,7 @@ export class App {
     const lesson = flow.lesson!;
     if (view.phase === 'look') {
       return `<main class="child-shell learn-shell">
-        ${this.renderChildHeader('Learn a useful trick', 'session-exit')}
+        ${this.renderChildHeader('Learn a useful idea', 'session-exit')}
         <section class="lesson-stage">
           <p class="eyebrow">${fact.factorA} × ${fact.factorB}</p>
           <h1>${escapeHtml(lesson.title)}</h1>
@@ -2054,4 +2062,3 @@ export class App {
     return `${prefix}-${crypto.randomUUID()}`;
   }
 }
-

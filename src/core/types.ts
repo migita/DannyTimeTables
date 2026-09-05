@@ -35,6 +35,7 @@ export interface FactProgress {
   independentAttempts?: number;
   timeouts?: number;
   lastTaughtAt?: number;
+  lastExposedAt?: number;
   /** Successful, unprompted recalls at least twenty hours after any exposure. */
   retentionChecks?: Array<{ at: number; gapHours: number }>;
   /** Division is related to, but not evidence for, multiplication recall. */

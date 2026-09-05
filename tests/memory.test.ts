@@ -143,3 +143,17 @@ it('records timeout separately without reducing accuracy or inferred stability',
   expect(timed.stabilityHours).toBe(progress.stabilityHours);
   expect(timed.averageResponseMs).toBe(2000);
 });
+
+it('restarts the retention gap when a lesson is viewed without answering', () => {
+  let progress = newFactProgress('7x4', 7, 4);
+  progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+    sessionId: 'first', source: 'test', now: start });
+  progress.lastExposedAt = start + 86400000;
+  progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+    sessionId: 'after-lesson', source: 'test', now: start + 86460000 });
+  expect(progress.retentionChecks).toEqual([]);
+  expect(progress.stabilityHours).toBe(6);
+  progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+    sessionId: 'later-day', source: 'test', now: start + 2 * 86400000 });
+  expect(progress.retentionChecks).toHaveLength(1);
+});

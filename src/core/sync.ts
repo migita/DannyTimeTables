@@ -96,8 +96,8 @@ function mergeFacts(
 function pickFact(local?: FactProgress, remote?: FactProgress): FactProgress | undefined {
   if (!local) return remote;
   if (!remote) return local;
-  const localSeen = local.lastReviewedAt ?? 0;
-  const remoteSeen = remote.lastReviewedAt ?? 0;
+  const localSeen = Math.max(local.lastReviewedAt ?? 0, local.lastExposedAt ?? 0);
+  const remoteSeen = Math.max(remote.lastReviewedAt ?? 0, remote.lastExposedAt ?? 0);
   const latest = localSeen !== remoteSeen ? (localSeen > remoteSeen ? local : remote)
     : remote.attempts > local.attempts ? remote : local;
   const division = pickFact(local.division, remote.division);

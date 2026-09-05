@@ -41,7 +41,8 @@ export function independentAttemptCount(progress: FactProgress): number {
 export function recordAnswer(progress: FactProgress, input: RecordAnswerInput): FactProgress {
   const now = input.now ?? Date.now();
   // Any exposure, including a guided correction, restarts the retention gap.
-  const previousExposure = progress.lastReviewedAt;
+  const previousExposure = progress.lastExposedAt === undefined ? progress.lastReviewedAt
+    : Math.max(progress.lastReviewedAt ?? 0, progress.lastExposedAt);
   const gapHours = previousExposure === null ? 0 : Math.max(0, now - previousExposure) / HOUR_MS;
   const delayed = input.independent && input.correct && !input.timedOut && gapHours >= RETENTION_GAP_HOURS;
   const recentAttempts = [...progress.recentAttempts, {

@@ -119,12 +119,12 @@ test('teaching steps stay guided and fit a phone', async ({ page }) => {
   const key = before.activeSession.warmUpQueue[0];
   await enterNumber(page, 0);
   await expect(page.locator('.correction-copy')).toBeVisible();
-  await enterNumber(page, await answerNow(page));
-  const after = await page.evaluate(() => JSON.parse(localStorage.getItem('danny-times-tables:data')!));
-  expect(after.facts[key].independentCorrect).toBe(before.facts[key].independentCorrect);
   expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
   const box = await page.locator('.keypad').boundingBox();
   expect(box!.y + box!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  await enterNumber(page, await answerNow(page));
+  const after = await page.evaluate(() => JSON.parse(localStorage.getItem('danny-times-tables:data')!));
+  expect(after.facts[key].independentCorrect).toBe(before.facts[key].independentCorrect);
 });
 
 test('division misses are fixed and independently retried as division', async ({ page }) => {
