@@ -1,6 +1,6 @@
 import { factsForTables, parseFactKey, sameFamily, type FactDescriptor } from './facts';
 import { recallProbability, weaknessScore } from './memory';
-import type { FactKey, FactProgress, RetryItem } from './types';
+import type { FactKey, FactProgress, QuestionKind, RetryItem } from './types';
 
 const TARGET_RECALL = 0.72;
 const INTRODUCE_EVERY = 4;
@@ -19,6 +19,8 @@ export interface SchedulerInput {
   introduced?: number;
   now?: number;
   random?: () => number;
+  /** Learning phase only draws facts already taught. */
+  allowNew?: boolean;
 }
 
 export interface ScheduledFact {
@@ -26,6 +28,7 @@ export interface ScheduledFact {
   factorA: number;
   factorB: number;
   reason: 'retry' | 'new' | 'fading' | 'weak' | 'check';
+  kind?: QuestionKind;
 }
 
 export function choosePracticeFact(input: SchedulerInput): ScheduledFact {
@@ -38,7 +41,7 @@ export function choosePracticeFact(input: SchedulerInput): ScheduledFact {
   const retry = input.retries
     .filter((item) => item.dueAfter <= input.answered && !input.recent.slice(-3).includes(item.factKey))
     .sort((a, b) => a.dueAfter - b.dueAfter)[0];
-  if (retry) return { ...parseFactKey(retry.factKey), reason: 'retry' };
+  if (retry) return { ...parseFactKey(retry.factKey), reason: 'retry', kind: retry.kind };
 
   const avoidNow = new Set(input.recent.slice(-2));
   const unseen = pool.filter((fact) => !input.facts[fact.key] && !avoidNow.has(fact.key));
@@ -50,7 +53,7 @@ export function choosePracticeFact(input: SchedulerInput): ScheduledFact {
   // up after a question the retry queue claimed, and a near-empty pool keeps
   // introducing regardless of pace so early sessions have enough variety.
   const introductionDue = (input.introduced ?? 0) < Math.floor((input.answered + 1) / INTRODUCE_EVERY);
-  if (unseen.length && (introductionDue || seen.length < MIN_SEEN_POOL)) {
+  if (input.allowNew !== false && unseen.length && (introductionDue || seen.length < MIN_SEEN_POOL)) {
     return { ...introductionOrder(unseen, seen)[0], reason: 'new' };
   }
 
@@ -100,11 +103,11 @@ export function choosePracticeFact(input: SchedulerInput): ScheduledFact {
   return { ...chosen.candidate, reason };
 }
 
-export function scheduleRetry(retries: RetryItem[], factKey: FactKey, answered: number, random = Math.random): RetryItem[] {
-  const withoutExisting = retries.filter((item) => item.factKey !== factKey);
+export function scheduleRetry(retries: RetryItem[], factKey: FactKey, answered: number, random = Math.random, kind: QuestionKind = 'multiplication'): RetryItem[] {
+  const withoutExisting = retries.filter((item) => item.factKey !== factKey || (item.kind ?? 'multiplication') !== kind);
   return [
     ...withoutExisting,
-    { factKey, dueAfter: answered + 3 + Math.floor(random() * 3) },
+    { factKey, dueAfter: answered + 3 + Math.floor(random() * 3), kind },
   ];
 }
 
@@ -155,3 +158,4 @@ function introductionOrder(unseen: FactDescriptor[], seen: FactDescriptor[]): Fa
     coverage(a.factorB) - coverage(b.factorB) || a.factorB - b.factorB || a.factorA - b.factorA
   ));
 }
+

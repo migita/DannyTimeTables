@@ -65,7 +65,7 @@ describe('memory model', () => {
     });
 
     expect(progress.correctSessionIds).toHaveLength(3);
-    expect(progress.stabilityHours).toBeGreaterThan(24 * 7);
+    expect(memoryLabel(progress, start + 4 * 24 * 60 * 60 * 1000)).not.toBe('Secure');
   });
 
   it('models decay and reduces stability after a lapse', () => {
@@ -96,4 +96,50 @@ describe('memory model', () => {
     expect(progress.stabilityHours).toBeLessThan(stabilityBefore);
     expect(progress.mistakes).toBe(1);
   });
+});
+
+
+it('does not mistake repeated same-day sessions for long-term retention', () => {
+  let progress = newFactProgress('7x4', 7, 4);
+  for (let index = 0; index < 30; index++) {
+    progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+      sessionId: `session-${index}`, source: 'practice', now: start + index * 60_000 });
+  }
+  expect(memoryLabel(progress, start + 30 * 60_000)).toBe('Learning');
+  expect(progress.retentionChecks).toEqual([]);
+  expect(progress.stabilityHours).toBeLessThan(24);
+});
+
+it('requires later-day recalls and a multi-day gap, and does not label stale facts fast', () => {
+  let progress = newFactProgress('7x4', 7, 4);
+  for (const day of [0, 1, 3, 7]) {
+    progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+      sessionId: `day-${day}`, source: 'test', now: start + day * 86400000 });
+  }
+  expect(memoryLabel(progress, start + 7 * 86400000)).toBe('Secure');
+  expect(progress.retentionChecks).toHaveLength(3);
+  expect(memoryLabel(progress, start + 365 * 86400000)).toBe('Learning');
+});
+
+it('does not count a correct answer after a warm-up as a delayed recall', () => {
+  let progress = newFactProgress('7x4', 7, 4);
+  progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+    sessionId: 'first', source: 'practice', now: start });
+  progress = recordAnswer(progress, { correct: true, independent: false, responseMs: 2000,
+    sessionId: 'second', source: 'learn', now: start + 86400000 });
+  progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+    sessionId: 'second', source: 'practice', now: start + 86460000 });
+  expect(progress.retentionChecks).toEqual([]);
+});
+
+it('records timeout separately without reducing accuracy or inferred stability', () => {
+  let progress = newFactProgress('7x4', 7, 4);
+  progress = recordAnswer(progress, { correct: true, independent: true, responseMs: 2000,
+    sessionId: 'one', source: 'practice', now: start });
+  const timed = recordAnswer(progress, { correct: false, timedOut: true, independent: true,
+    responseMs: 3000, sessionId: 'two', source: 'test', now: start + 86400000 });
+  expect(timed.mistakes).toBe(0);
+  expect(timed.timeouts).toBe(1);
+  expect(timed.stabilityHours).toBe(progress.stabilityHours);
+  expect(timed.averageResponseMs).toBe(2000);
 });

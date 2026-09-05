@@ -11,6 +11,8 @@ export interface FactAttempt {
   responseMs: number;
   sessionId: string;
   source: AttemptSource;
+  timedOut?: boolean;
+  delayedHours?: number;
 }
 
 export interface FactProgress {
@@ -30,6 +32,13 @@ export interface FactProgress {
   averageResponseMs: number | null;
   correctSessionIds: string[];
   recentAttempts: FactAttempt[];
+  independentAttempts?: number;
+  timeouts?: number;
+  lastTaughtAt?: number;
+  /** Successful, unprompted recalls at least twenty hours after any exposure. */
+  retentionChecks?: Array<{ at: number; gapHours: number }>;
+  /** Division is related to, but not evidence for, multiplication recall. */
+  division?: FactProgress;
 }
 
 /** Legacy summaries from the separate practice mode; kept for old backups and older devices on the same family code. */
@@ -72,6 +81,8 @@ export interface TestQuestion {
   answer: number;
   factKey: FactKey;
   table: number;
+  /** Frozen when a check is generated; unfamiliar facts stay untimed. */
+  timeLimitSeconds?: number;
 }
 
 export interface TestAnswer {
@@ -88,11 +99,65 @@ export interface TestResult {
   config: TestConfig;
   startedAt: number;
   finishedAt: number;
-  status: 'passed' | 'failed' | 'abandoned';
+  status: 'passed' | 'failed' | 'abandoned' | 'completed';
   correct: number;
   answered: number;
   answers: TestAnswer[];
   questions: TestQuestion[];
+  assessment?: 'check' | 'placement' | 'legacy';
+  learning?: LearningSummary;
+}
+
+export interface LearningSummary {
+  taught: number;
+  practiceCorrect: number;
+  practiceAnswered: number;
+  applicationCorrect: number;
+  applicationAnswered: number;
+  finishedAt: number;
+}
+
+export interface LessonStep {
+  prompt: string;
+  expression: string;
+  answer: number;
+}
+
+export interface StrategyLesson {
+  title: string;
+  explanation: string;
+  equation: string;
+  rows: number;
+  columns: number;
+  splitAfter?: number;
+  steps: LessonStep[];
+}
+
+export interface ApplicationQuestion {
+  factKey: FactKey;
+  prompt: string;
+  expression: string;
+  answer: number;
+  help: string;
+  kind: 'missing-factor' | 'story';
+}
+
+export interface LearningFlow {
+  stage: 'check' | 'warmup' | 'practice' | 'application';
+  assessment: 'check' | 'placement';
+  checkQuestions: TestQuestion[];
+  resultId?: string;
+  lessonCount: number;
+  taughtKeys: FactKey[];
+  lessonStep: number;
+  lesson?: StrategyLesson;
+  practiceTarget: number;
+  practiceRecords: SessionRecord[];
+  applicationQuestions: ApplicationQuestion[];
+  applicationIndex: number;
+  applicationMissed: boolean;
+  applicationAnswered?: boolean;
+  applicationCorrect: number;
 }
 
 /** How each session runs: an optional warm-up, then the scored questions. */
@@ -144,6 +209,9 @@ export interface ActiveSession {
   records: SessionRecord[];
   /** Non-null when fixing test misses: remaining facts, re-queued until answered independently. */
   fixQueue: FactKey[] | null;
+  /** Added in 3.0; absent on resumable sessions created by older apps. */
+  flow?: LearningFlow;
+  fixQuestions?: TestQuestion[];
 }
 
 export interface SyncSettings {
@@ -166,4 +234,5 @@ export interface AppData {
 export interface RetryItem {
   factKey: FactKey;
   dueAfter: number;
+  kind?: QuestionKind;
 }

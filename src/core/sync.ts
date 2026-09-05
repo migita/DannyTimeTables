@@ -98,8 +98,13 @@ function pickFact(local?: FactProgress, remote?: FactProgress): FactProgress | u
   if (!remote) return local;
   const localSeen = local.lastReviewedAt ?? 0;
   const remoteSeen = remote.lastReviewedAt ?? 0;
-  if (localSeen !== remoteSeen) return localSeen > remoteSeen ? local : remote;
-  return remote.attempts > local.attempts ? remote : local;
+  const latest = localSeen !== remoteSeen ? (localSeen > remoteSeen ? local : remote)
+    : remote.attempts > local.attempts ? remote : local;
+  const division = pickFact(local.division, remote.division);
+  const checks = [...new Map([...(local.retentionChecks ?? []), ...(remote.retentionChecks ?? [])]
+    .map(check => [check.at, check])).values()].sort((a, b) => a.at - b.at).slice(-24);
+  return { ...latest, ...(division ? { division } : {}),
+    ...(checks.length ? { retentionChecks: checks } : {}) };
 }
 
 function mergeById<T extends { id: string; finishedAt: number }>(local: T[], remote: T[]): T[] {

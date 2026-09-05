@@ -1,6 +1,20 @@
 # Danny Times — notes
 
-**Date:** 2026-08-25 · **App version:** 2.1.0 (data schema v5)
+**Date:** 2026-08-25 · **App version:** 3.0.0 (data schema v5)
+
+## 3.0.0 — teaching, independent checks and retention
+
+The Start flow is now check → teach → practise → apply. A check freezes its question list before any answers or explanations are shown; its result cannot be changed by subsequent practice. Starting checks are unscored when fewer than six facts have been taught. Teaching Off keeps a strict check-only path.
+
+Lessons use a known doubling or splitting strategy when available, with coloured arrays and intermediate steps. Two short application questions exercise a missing factor and a contextual quantity. Read-aloud uses installed local English voices only.
+
+Memory evidence now distinguishes day-separated recall from immediate repetition. A guided exposure resets the retention interval. Secure requires at least three successful later-day checks, a gap of at least 72 hours, and five days between the first and latest retained checks. Old history is preserved, but labels can become more conservative until this evidence is collected. Timeouts do not count as conceptual mistakes or reduce stability, and only established check facts receive a time limit.
+
+Division has its own optional progress record. Both immediate repair and the Fix the misses round preserve the question operation. Sync merges the two operation records independently and retains observed delayed recalls.
+
+Storage schema remains v5 and sync payload remains v1, using additive fields. Existing settings and historical results are preserved. In-progress older sessions keep their legacy flow. New sessions persist their fixed check, teaching position and application state. Ending a learning phase preserves the completed check result.
+
+Verification: unit regressions cover same-day overconfidence, warm-up contamination, delayed recall, timeout classification, fixed question selection, strategy prerequisites, operation-specific retries and backup/sync compatibility. Browser regressions cover assessment before teaching, honest scores, division repair, phone layout, resume and parent controls.
 
 ## 2.1.0 — timed questions (2026-08-25)
 
@@ -84,3 +98,4 @@ live in `tests/simulation.test.ts`.
 Old devices on the same family code keep working: the sync payload shape is
 unchanged (legacy presets/practice history are carried, frozen), and settings from
 older devices are back-filled with session defaults on arrival.
+

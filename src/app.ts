@@ -1,3 +1,4 @@
+import { applicationQuestions, factFromQuestion, makeCheck, practicePool, strategyLesson } from './core/learning';
 import { playAnswerSound } from './core/audio';
 import {
   ALL_TABLES,
@@ -11,7 +12,9 @@ import {
 import {
   memoryLabel,
   newFactProgress,
-  recallProbability,
+  operationProgress,
+  retentionDescription,
+  validRetentionChecks,
   recordAnswer,
   weaknessScore,
 } from './core/memory';
@@ -22,7 +25,6 @@ import {
   requiredCorrect,
   sessionResult,
   timeLimitMs,
-  warmUpRetries,
   type PresentedQuestion,
 } from './core/session';
 import {
@@ -52,6 +54,9 @@ import type {
   FactKey,
   MemoryLabel,
   SessionConfig,
+  SessionRecord,
+  QuestionKind,
+  StrategyLesson,
   TestResult,
 } from './core/types';
 import {
@@ -75,7 +80,7 @@ export function parentPin(now = new Date()): string {
   return `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
 }
 type ParentTab = 'progress' | 'settings';
-type SessionPhase = 'look' | 'try' | 'answer' | 'right' | 'correction' | 'corrected' | 'done';
+type SessionPhase = 'look' | 'try' | 'answer' | 'right' | 'correction' | 'corrected' | 'recorded' | 'application' | 'application-right' | 'done';
 
 interface SessionView {
   phase: SessionPhase;
@@ -188,6 +193,9 @@ export class App {
         break;
       case 'home':
         this.goHome();
+        break;
+      case 'speak-question':
+        this.speakQuestion();
         break;
       case 'warmup-try':
         if (this.session?.phase === 'look') {
@@ -369,6 +377,7 @@ export class App {
     const growing = labelCounts.Remembering + labelCounts.Fast + labelCounts.Secure;
     const finishedSessions = this.data.testHistory.filter((result) => result.status !== 'abandoned').length;
     const needed = requiredCorrect(session);
+    const starting = Object.values(this.data.facts).filter(f => f.independentCorrect > 0 || f.lastTaughtAt !== undefined).length < 6;
 
     return `
       <main class="home-shell">
@@ -396,7 +405,7 @@ export class App {
           <button class="mode-card practice-card" type="button" data-action="start-session">
             <span class="mode-visual target-visual" aria-hidden="true"><b>${session.questionCount}</b></span>
             <span class="mode-copy">
-              <small>${session.warmUpCount > 0 ? 'Warm-up, then ' : ''}${session.questionCount} questions · ${needed} to pass${session.timeLimitSeconds ? ` · ${session.timeLimitSeconds} s each` : ''}</small>
+              <small>${starting ? 'A short starting check' : `${session.questionCount} check questions · ${needed} to pass`}${session.warmUpCount > 0 ? ' · then learn' : ''}</small>
               <strong>Start</strong>
             </span>
             ${icon('chevron-right')}
@@ -447,6 +456,8 @@ export class App {
       `;
     }
 
+    if (active?.flow?.stage === 'application') return this.renderApplication(active, view);
+
     if (view.phase === 'look' || view.phase === 'try') {
       return this.renderWarmUp(view);
     }
@@ -456,6 +467,7 @@ export class App {
 
   private renderWarmUp(view: SessionView): string {
     const fact = view.warmFact!;
+    if (this.data.activeSession?.flow) return this.renderStrategyLesson(view);
     const explanation = explanationForFact(fact.factorA, fact.factorB);
     const question = `${fact.factorA} × ${fact.factorB}`;
 
@@ -500,52 +512,50 @@ export class App {
   private renderQuestions(active: ActiveSession, view: SessionView): string {
     const current = view.current;
     if (!current) return this.renderHome();
-    const total = active.config.questionCount;
-    const currentNumber = view.phase === 'answer' ? active.answered + 1 : active.answered;
-    const remainingFixes = view.fixing
-      ? (active.fixQueue?.length ?? 0)
-      : 0;
+    const flow = active.flow;
+    const checking = flow?.stage === 'check';
+    const practising = flow?.stage === 'practice';
+    const records = practising ? flow.practiceRecords : active.records;
+    const answered = practising ? records.length : active.answered;
+    const total = practising ? flow.practiceTarget : active.config.questionCount;
+    const currentNumber = view.phase === 'answer' ? answered + 1 : answered;
+    const title = view.fixing ? 'Fix the misses' : checking
+      ? flow.assessment === 'placement' ? 'Starting check' : 'Check'
+      : practising ? 'Practice' : 'Questions';
     const progress = view.fixing
-      ? `<div class="child-progress open-progress"><span>${remainingFixes} to fix</span></div>`
-      : `<div class="child-progress"><span>${Math.min(currentNumber, total)} / ${total}</span>${renderProgressBar(active.answered, total, 'Session progress')}</div>`;
+      ? `<div class="child-progress open-progress"><span>${active.fixQuestions?.length ?? active.fixQueue?.length ?? 0} to fix</span></div>`
+      : `<div class="child-progress"><span>${Math.min(currentNumber, total)} / ${total}</span>${renderProgressBar(answered, total, 'Session progress')}</div>`;
     const correction = view.phase === 'correction' || view.phase === 'corrected';
-    const feedback = view.phase === 'right' || view.phase === 'corrected';
+    const recorded = view.phase === 'recorded';
+    const feedback = view.phase === 'right' || view.phase === 'corrected' || recorded;
     const presented = current.presented;
     const correctionCopy = presented.kind === 'division'
-      ? `<p><strong>${presented.left} shared into ${presented.right}s makes ${presented.answer}</strong><span>Type ${presented.answer}</span></p>`
-      : `<p><strong>${current.factorA} groups of ${current.factorB} make ${presented.answer}</strong><span>Type the correct answer</span></p>`;
-    const limitMs = timeLimitMs(active.config);
-
-    return `
-      <main class="child-shell practice-shell question-shell">
-        ${this.renderChildHeader(view.fixing ? 'Fix the misses' : 'Questions', 'session-exit')}
-        ${progress}
-        <section class="question-stage ${feedback ? 'has-feedback' : ''}">
-          ${correction ? `
-            <div class="practice-correction" role="status">
-              <div class="compact-visual">${renderFactVisual(current.factorA, current.factorB)}</div>
-              ${correctionCopy}
-            </div>
-          ` : ''}
-          <div class="equation ${correction ? 'equation-small' : ''}">
-            <span>${presented.left} ${presented.operator} ${presented.right}</span><span>=</span>
-            <output aria-label="Your answer">${view.phase === 'right' ? presented.answer : view.input || '?'}</output>
-          </div>
-          ${limitMs ? this.renderTimeTrack(limitMs, active, view) : ''}
-          ${view.phase === 'right' ? '<p class="answer-feedback right-feedback" role="status">Yes</p>' : ''}
-          ${view.phase === 'correction' && view.timedOut ? '<p class="answer-feedback timeout-feedback" role="status">Out of time</p>' : ''}
-          ${view.phase === 'corrected' ? '<p class="answer-feedback right-feedback" role="status">That’s it</p>' : ''}
-        </section>
-        ${renderKeypad(view.input, feedback)}
-      </main>
-    `;
+      ? `${presented.left} makes ${presented.answer} groups of ${presented.right}.`
+      : `${current.factorA} groups of ${current.factorB} make ${presented.answer}.`;
+    const limitMs = this.currentTimeLimit();
+    const output = recorded ? (records.at(-1)?.given ?? '—') : view.phase === 'right' ? presented.answer : view.input || '?';
+    return `<main class="child-shell practice-shell question-shell">
+      ${this.renderChildHeader(title, 'session-exit')}
+      ${progress}
+      <section class="question-stage ${feedback ? 'has-feedback' : ''}">
+        ${checking ? `<p class="check-caption">${flow.assessment === 'placement' ? 'Show what you know. It is OK to be unsure.' : 'Try it on your own. We will learn together afterwards.'}</p>` : ''}
+        ${correction ? `<div class="practice-correction" role="status">
+          <div class="compact-visual">${renderFactVisual(current.factorA, current.factorB)}</div>
+          <p><strong>${correctionCopy}</strong><span>Type the correct answer</span></p>
+        </div>` : ''}
+        <div class="equation ${correction ? 'equation-small' : ''}">
+          <span>${presented.left} ${presented.operator} ${presented.right}</span><span>=</span><output aria-label="Your answer">${output}</output>
+        </div>
+        ${limitMs ? this.renderTimeTrack(limitMs, active, view) : ''}
+        ${recorded ? '<p class="answer-feedback neutral-feedback" role="status">Answer saved</p>' : ''}
+        ${view.phase === 'right' ? '<p class="answer-feedback right-feedback" role="status">Yes</p>' : ''}
+        ${view.phase === 'correction' && view.timedOut ? '<p class="answer-feedback timeout-feedback" role="status">Out of time — take your time now</p>' : ''}
+        ${view.phase === 'corrected' ? '<p class="answer-feedback right-feedback" role="status">That’s it</p>' : ''}
+      </section>
+      ${renderKeypad(view.input, feedback)}
+    </main>`;
   }
 
-  /**
-   * The countdown is a CSS animation started at a negative delay, so it stays
-   * in the right place across the full re-render every keypress causes. Once
-   * the question is settled the bar freezes where the answer landed.
-   */
   private renderTimeTrack(limitMs: number, active: ActiveSession, view: SessionView): string {
     const answering = view.phase === 'answer';
     const elapsed = answering
@@ -573,49 +583,45 @@ export class App {
     const result = this.latestResult ?? this.data.testHistory.at(-1);
     if (!result || result.status === 'abandoned') return this.renderHome();
     const passed = result.status === 'passed';
+    const placement = result.assessment === 'placement';
     const needed = requiredCorrect(result.config);
-    const limit = result.config.timeLimitSeconds ?? 0;
-    const missed = result.questions.filter((question) => {
-      const answer = result.answers.find((item) => item.questionId === question.id);
-      return answer && !answer.correct;
-    });
-
-    return `
-      <main class="result-shell ${passed ? 'pass-result' : 'fail-result'}">
-        <header class="result-header"><span>Danny Times</span><strong>${escapeHtml(result.presetName ?? 'Session')}</strong></header>
-        <section class="result-main">
-          <span class="result-stamp">${passed ? icon('shield-check') : icon('rotate-ccw')}</span>
-          <p class="result-word">${passed ? 'PASS' : 'NOT YET'}</p>
-          <h1>${result.correct} / ${result.config.questionCount} correct</h1>
-          <p class="pass-line">Pass mark ${needed}${limit ? ` · ${limit} s per question` : ''}</p>
-          <p class="result-time">Finished ${formatDate(result.finishedAt)}</p>
-        </section>
-        <section class="result-details">
-          <div class="result-metrics">
-            <div><strong>${result.config.questionCount - result.correct}</strong><span>missed</span></div>
-            <div><strong>${Math.round(result.correct / result.config.questionCount * 100)}%</strong><span>score</span></div>
-            <div><strong>${result.config.tables.join(', ')}</strong><span>tables</span></div>
-          </div>
-          ${missed.length ? `
-            <details class="missed-details">
-              <summary>Review ${missed.length} missed ${missed.length === 1 ? 'question' : 'questions'}</summary>
-              <div>${missed.map((question) => {
-                const answer = result.answers.find((item) => item.questionId === question.id)!;
-                const given = answer.answer === null
-                  ? `<span class="out-of-time" role="img" aria-label="Out of time">${icon('clock-3')}</span>`
-                  : `<s>${answer.answer}</s>`;
-                return `<p><span>${question.left} ${question.operator} ${question.right}</span>${given}<strong>${question.answer}</strong></p>`;
-              }).join('')}</div>
-            </details>
-          ` : ''}
-          <div class="result-actions">
-            ${missed.length ? `<button class="${passed ? 'secondary-button' : 'primary-button test-button'}" type="button" data-action="fix-misses">${icon('brain')} Fix the ${missed.length === 1 ? 'miss' : 'misses'}</button>` : ''}
-            ${!passed ? `<button class="secondary-button" type="button" data-action="new-session">${icon('rotate-ccw')} New session</button>` : ''}
-            <button class="${passed ? 'primary-button test-button' : 'secondary-button'}" type="button" data-action="home">${icon('home')} Home</button>
-          </div>
-        </section>
-      </main>
-    `;
+    const timed = result.questions.some(q => (q.timeLimitSeconds ?? 0) > 0) ||
+      (!result.assessment && (result.config.timeLimitSeconds ?? 0) > 0);
+    const missed = result.questions.filter(q => result.answers.some(a => a.questionId === q.id && !a.correct));
+    const timeouts = result.answers.filter(a => a.answer === null).length;
+    const learning = result.learning;
+    return `<main class="result-shell ${passed || placement ? 'pass-result' : 'fail-result'}">
+      <header class="result-header"><span>Danny Times</span><strong>${placement ? 'Starting check' : result.assessment === 'legacy' ? 'Session' : 'Check'}</strong></header>
+      <section class="result-main">
+        <span class="result-stamp">${icon(placement ? 'book-open' : passed ? 'shield-check' : 'rotate-ccw')}</span>
+        <p class="result-word">${placement ? 'GOOD START' : passed ? 'PASS' : 'NOT YET'}</p>
+        <h1>${placement ? 'Ready to keep learning' : `${result.correct} / ${result.config.questionCount} correct`}</h1>
+        <p class="pass-line">${placement ? 'Starting checks have no pass mark.' : `Pass mark ${needed}${timed ? ' · established facts timed' : ''}`}</p>
+        <p class="result-time">${placement ? `${result.correct} of ${result.answered} answered correctly. ` : ''}Finished ${formatDate(result.finishedAt)}</p>
+      </section>
+      <section class="result-details">
+        <div class="result-metrics">
+          <div><strong>${result.answered - result.correct - timeouts}</strong><span>wrong answers</span></div>
+          <div><strong>${timeouts}</strong><span>timed out</span></div>
+          <div><strong>${result.config.tables.join(', ')}</strong><span>tables</span></div>
+        </div>
+        ${learning ? `<section class="learning-summary" aria-label="Learning today">
+          <h2>Learning today</h2>
+          <p>${learning.taught} ${learning.taught === 1 ? 'fact explored' : 'facts explored'} · ${learning.practiceCorrect}/${learning.practiceAnswered} practice answers</p>
+          <p>${learning.applicationCorrect}/${learning.applicationAnswered} puzzles solved without help</p>
+          <small>We will check what you remember on another day.</small>
+        </section>` : ''}
+        ${missed.length ? `<details class="missed-details"><summary>Review ${missed.length} missed ${missed.length === 1 ? 'question' : 'questions'}</summary><div>
+          ${missed.map(q => { const a = result.answers.find(item => item.questionId === q.id)!;
+            return `<p><span>${q.left} ${q.operator} ${q.right}</span>${a.answer === null ? '<span aria-label="Timed out">Clock</span>' : `<s>${a.answer}</s>`}<strong>${q.answer}</strong></p>`;
+          }).join('')}
+        </div></details>` : ''}
+        <div class="result-actions">
+          ${missed.length ? `<button class="secondary-button" type="button" data-action="fix-misses">${icon('brain')} Fix the ${missed.length === 1 ? 'miss' : 'misses'}</button>` : ''}
+          <button class="primary-button test-button" type="button" data-action="home">${icon('home')} Home</button>
+        </div>
+      </section>
+    </main>`;
   }
 
   private renderParent(): string {
@@ -719,10 +725,9 @@ export class App {
           <div class="fact-list">
             ${weakFacts.map((fact) => {
               const progress = this.data.facts[fact.key];
-              const recall = Math.round(recallProbability(progress) * 100);
               const reason = progress.lastWrongAt && Date.now() - progress.lastWrongAt < 7 * 86_400_000
                 ? 'recent mistake'
-                : progress.mistakes > 0 ? `${progress.mistakes} mistakes` : `${recall}% recall now`;
+                : progress.mistakes > 0 ? `${progress.mistakes} mistakes` : retentionDescription(progress);
               return `<button type="button" data-action="inspect-fact" data-key="${fact.key}"><strong>${fact.factorA} × ${fact.factorB}</strong><span>${reason}</span>${icon('chevron-right')}</button>`;
             }).join('')}
           </div>
@@ -732,7 +737,7 @@ export class App {
         ${recentlySecure.length ? `<div class="slow-row"><span>Recently secure</span>${recentlySecure.map((fact) => `<button type="button" data-action="inspect-fact" data-key="${fact.key}">${fact.factorA}×${fact.factorB}</button>`).join('')}</div>` : ''}
         <details class="how-it-works">
           <summary>${icon('info')} How sessions choose questions</summary>
-          <p>Each session warms up the facts most in need, then asks questions aimed near 75% recall. New facts arrive steadily (about one in four questions while any remain), a fact never repeats within eight questions unless it was missed, and a missed fact returns after 3–5 questions. The score counts first answers only; with a time limit on, running out of time counts as a miss.</p>
+          <p>The check comes first: its questions are fixed before any answers or teaching are shown. It covers previously taught facts. A starting check is unscored when there are too few taught facts. Teaching, practice and puzzles follow without changing the check score. Secure means successful recall on later days, including a gap of at least three days. Timing is used only on established facts; timeouts are recorded separately from wrong answers.</p>
         </details>
       </section>
 
@@ -742,7 +747,7 @@ export class App {
           const passed = result.status === 'passed';
           const label = result.status === 'abandoned'
             ? `Stopped at ${result.answered}`
-            : `${passed ? 'Pass' : 'Not yet'} · ${result.correct}/${result.config.questionCount}`;
+            : `${result.assessment === 'placement' ? 'Starting check' : passed ? 'Pass' : 'Not yet'} · ${result.correct}/${result.config.questionCount}`;
           return `
             <div class="activity-item">
               <span class="activity-icon ${passed ? 'passed-icon' : 'failed-icon'}">${passed ? icon('check') : result.status === 'abandoned' ? icon('pause') : icon('x')}</span>
@@ -767,9 +772,9 @@ export class App {
       </section>
 
       <section class="parent-section session-section">
-        <div class="section-heading"><div><p class="eyebrow">Each session</p><h2>Warm-up and questions</h2></div></div>
+        <div class="section-heading"><div><p class="eyebrow">Each session</p><h2>Check, then learn</h2></div></div>
         <div class="form-group">
-          <div class="form-label"><strong>Warm-up facts</strong><span>shown before the questions</span></div>
+          <div class="form-label"><strong>Teaching facts</strong><span>after the check; Off gives just the check</span></div>
           <div class="segmented-control four-segments">
             ${WARM_UP_COUNTS.map((count) => `<button type="button" class="${session.warmUpCount === count ? 'active' : ''}" data-action="set-warmup" data-value="${count}">${count === 0 ? 'Off' : count}</button>`).join('')}
           </div>
@@ -781,7 +786,7 @@ export class App {
           </div>
         </div>
         <div class="form-group">
-          <div class="form-label"><strong>Time per question</strong><span>${session.timeLimitSeconds ? 'out of time counts as a miss' : 'no limit'}</span></div>
+          <div class="form-label"><strong>Time per question</strong><span>${session.timeLimitSeconds ? 'established facts only; learning stays untimed' : 'no limit'}</span></div>
           <div class="segmented-control four-segments">
             ${TIME_LIMITS.map((seconds) => `<button type="button" class="${session.timeLimitSeconds === seconds ? 'active' : ''}" data-action="set-time-limit" data-value="${seconds}">${seconds === 0 ? 'Off' : `${seconds} s`}</button>`).join('')}
           </div>
@@ -913,8 +918,8 @@ export class App {
     }
     if (this.resumePrompt && this.data.activeSession) {
       const active = this.data.activeSession;
-      const headline = active.warmUpQueue.length
-        ? 'Warm-up in progress'
+      const headline = active.flow && active.flow.stage !== 'check' ? 'Learning in progress' : active.warmUpQueue.length
+        ? 'Teaching in progress'
         : `${active.answered} of ${active.fixQueue ? active.answered + active.fixQueue.length : active.config.questionCount} answered`;
       overlays.push(`
         <div class="modal-backdrop" role="presentation">
@@ -970,7 +975,7 @@ export class App {
     const fact = parseFactKey(key);
     const progress = this.data.facts[key];
     const label = memoryLabel(progress);
-    const recall = Math.round(recallProbability(progress) * 100);
+    const retention = progress ? validRetentionChecks(progress) : [];
     return `
       <div class="modal-backdrop" role="presentation">
         <section class="modal fact-modal" role="dialog" aria-modal="true" aria-labelledby="fact-title">
@@ -980,18 +985,20 @@ export class App {
           <div class="fact-metrics">
             <div><strong>${progress?.independentCorrect ?? 0}</strong><span>correct</span></div>
             <div><strong>${progress?.mistakes ?? 0}</strong><span>mistakes</span></div>
-            <div><strong>${recall}%</strong><span>recall now</span></div>
+            <div><strong>${retention.length}</strong><span>later-day recalls</span></div>
           </div>
           <dl class="fact-data">
             <div><dt>Average answer</dt><dd>${progress?.averageResponseMs ? `${(progress.averageResponseMs / 1000).toFixed(1)}s` : 'No data'}</dd></div>
             <div><dt>Correct sessions</dt><dd>${progress?.correctSessionIds.length ?? 0}</dd></div>
-            <div><dt>Memory stability</dt><dd>${progress?.stabilityHours ? this.formatStability(progress.stabilityHours) : 'New'}</dd></div>
+            <div><dt>Retention evidence</dt><dd>${retentionDescription(progress)}</dd></div>
+            <div><dt>Timed out</dt><dd>${progress?.timeouts ?? 0}</dd></div>
+            <div><dt>Related division</dt><dd>${progress?.division?.independentCorrect ?? 0} correct · ${retentionDescription(progress?.division)}</dd></div>
             <div><dt>Last reviewed</dt><dd>${progress?.lastReviewedAt ? formatDate(progress.lastReviewedAt) : 'Never'}</dd></div>
           </dl>
           <div class="attempt-history">
             <h3>Recent attempts</h3>
             ${progress?.recentAttempts.length ? progress.recentAttempts.slice(-6).reverse().map((attempt) => `
-              <p><span class="attempt-dot ${attempt.correct ? 'correct' : 'wrong'}"></span><strong>${attempt.correct ? 'Correct' : 'Mistake'}${attempt.independent ? '' : ' · guided'}</strong><time>${formatAgo(attempt.at)}</time></p>
+              <p><span class="attempt-dot ${attempt.correct ? 'correct' : 'wrong'}"></span><strong>${attempt.timedOut ? 'Timed out' : attempt.correct ? 'Correct' : 'Mistake'}${attempt.independent ? '' : ' · guided'}</strong><time>${formatAgo(attempt.at)}</time></p>
             `).join('') : '<p class="empty-copy">No attempts yet.</p>'}
           </div>
         </section>
@@ -1045,52 +1052,35 @@ export class App {
   private startSession(): void {
     this.clearSessionTimers();
     const settings = this.data.settings;
-    const warmUp = pickWarmUpFacts(settings.activeTables, this.data.facts, settings.session.warmUpCount);
+    const check = makeCheck(settings.activeTables, this.data.facts, settings.session.questionCount,
+      settings.session.includeDivision, settings.session.timeLimitSeconds);
     const active: ActiveSession = {
-      id: this.makeId('session'),
-      startedAt: Date.now(),
-      config: {
-        tables: [...settings.activeTables],
-        questionCount: settings.session.questionCount,
-        passMode: settings.session.passMode,
-        passValue: settings.session.passValue,
-        includeDivision: settings.session.includeDivision,
-        timeLimitSeconds: settings.session.timeLimitSeconds,
-      },
-      warmUpQueue: warmUp.map((fact) => fact.key),
-      answered: 0,
-      correct: 0,
-      introduced: warmUp.filter((fact) => !this.data.facts[fact.key]).length,
-      recent: [],
-      retries: warmUpRetries(warmUp.map((fact) => fact.key)),
-      records: [],
-      fixQueue: null,
+      id: this.makeId('session'), startedAt: Date.now(),
+      config: { tables: [...settings.activeTables], questionCount: check.questions.length,
+        passMode: settings.session.passMode, passValue: settings.session.passValue,
+        includeDivision: settings.session.includeDivision, timeLimitSeconds: settings.session.timeLimitSeconds },
+      warmUpQueue: [], answered: 0, correct: 0, introduced: 0, recent: [], retries: [], records: [], fixQueue: null,
+      flow: { stage: 'check', assessment: check.assessment, checkQuestions: check.questions,
+        lessonCount: settings.session.warmUpCount, taughtKeys: [], lessonStep: 0,
+        practiceTarget: 6, practiceRecords: [], applicationQuestions: [], applicationIndex: 0,
+        applicationMissed: false, applicationCorrect: 0 },
     };
     this.data.activeSession = active;
     this.latestResult = null;
     this.resumePrompt = false;
     this.abandonPrompt = false;
-    this.session = {
-      phase: 'look',
-      fixing: false,
-      warmFact: warmUp.length ? warmUp[0] : null,
-      warmMissed: false,
-      current: null,
-      input: '',
-      questionStartedAt: Date.now(),
-      pausedAt: null,
-      timedOut: false,
-    };
+    this.session = { phase: 'answer', fixing: false, warmFact: null, warmMissed: false,
+      current: null, input: '', questionStartedAt: Date.now(), pausedAt: null, timedOut: false };
     this.screen = 'session';
-    if (!warmUp.length) {
-      this.nextQuestion();
-    }
+    this.nextQuestion();
     this.persist();
     this.render();
   }
 
   private startFixSession(result: TestResult): void {
     this.clearSessionTimers();
+    const missedQuestions = result.questions.filter(q => result.answers.some(a => a.questionId === q.id && !a.correct));
+    const distinctQuestions = [...new Map(missedQuestions.map(q => [`${q.factKey}:${q.kind}`, { ...q, timeLimitSeconds: 0 }])).values()];
     const missedKeys = [...new Set(result.questions
       .filter((question) => {
         const answer = result.answers.find((item) => item.questionId === question.id);
@@ -1113,6 +1103,7 @@ export class App {
       retries: [],
       records: [],
       fixQueue: missedKeys,
+      fixQuestions: distinctQuestions,
     };
     this.session = {
       phase: 'answer',
@@ -1151,7 +1142,9 @@ export class App {
       timedOut: false,
     };
     this.screen = 'session';
-    if (active.warmUpQueue.length) {
+    if (active.flow) {
+      this.nextQuestion();
+    } else if (active.warmUpQueue.length) {
       this.session.warmFact = parseFactKey(active.warmUpQueue[0]);
     } else {
       this.nextQuestion();
@@ -1163,6 +1156,11 @@ export class App {
     const active = this.data.activeSession;
     if (!active || this.session?.phase === 'done') {
       this.goHome();
+      return;
+    }
+    if (active.flow?.resultId) {
+      this.finishLearning();
+      this.render();
       return;
     }
     if (active.fixQueue !== null || active.answered === 0) {
@@ -1179,6 +1177,13 @@ export class App {
   private confirmAbandon(): void {
     this.clearSessionTimers();
     const active = this.data.activeSession;
+    if (active?.flow?.resultId) {
+      this.abandonPrompt = false;
+      this.resumePrompt = false;
+      this.finishLearning();
+      this.render();
+      return;
+    }
     if (active) {
       if (active.fixQueue === null && active.answered > 0) {
         this.data.testHistory = [...this.data.testHistory, sessionResult(active, 'abandoned')].slice(-100);
@@ -1198,6 +1203,24 @@ export class App {
     const view = this.session;
     if (!active || !view) return;
     view.timedOut = false;
+
+    if (active.flow) {
+      this.nextFlowQuestion();
+      return;
+    }
+    if (active.fixQuestions) {
+      const item = active.fixQuestions[0];
+      if (!item) {
+        this.data.activeSession = null;
+        view.phase = 'done';
+        view.current = null;
+        this.persist();
+        return;
+      }
+      view.current = factFromQuestion(item);
+      this.openQuestion(view);
+      return;
+    }
 
     if (active.fixQueue !== null) {
       const nextKey = active.fixQueue[0];
@@ -1232,10 +1255,10 @@ export class App {
       introduced: active.introduced,
     });
     if (!this.data.facts[chosen.key]) active.introduced += 1;
-    const asDivision = active.config.includeDivision &&
+    const asDivision = chosen.kind === 'division' || (active.config.includeDivision &&
       chosen.reason !== 'retry' &&
       (this.data.facts[chosen.key]?.independentCorrect ?? 0) > 0 &&
-      Math.random() < 0.4;
+      Math.random() < 0.4);
     view.current = { ...chosen, presented: presentQuestion(chosen.factorA, chosen.factorB, asDivision, randomFlip()) };
     this.openQuestion(view);
   }
@@ -1265,7 +1288,7 @@ export class App {
 
   private currentInput(): string | null {
     if (this.screen !== 'session' || !this.session) return null;
-    if (['try', 'answer', 'correction'].includes(this.session.phase)) return this.session.input;
+    if (['try', 'answer', 'correction', 'application'].includes(this.session.phase)) return this.session.input;
     return null;
   }
 
@@ -1293,7 +1316,9 @@ export class App {
     const input = this.currentInput();
     if (!input) return;
     const answer = Number(input);
-    if (this.session?.phase === 'try') {
+    if (this.session?.phase === 'application') {
+      this.submitApplication(answer);
+    } else if (this.session?.phase === 'try') {
       this.submitWarmUpAnswer(answer);
     } else {
       this.submitQuestionAnswer(answer);
@@ -1304,6 +1329,7 @@ export class App {
     const active = this.data.activeSession;
     const view = this.session;
     if (!active || !view || !view.warmFact) return;
+    if (active.flow) { this.submitStrategyStep(answer); return; }
     const fact = view.warmFact;
     const responseMs = Math.max(200, Date.now() - view.questionStartedAt);
 
@@ -1342,15 +1368,16 @@ export class App {
     const active = this.data.activeSession;
     const view = this.session;
     if (!active || !view || !view.current || view.phase !== 'answer') return;
+    if (active.flow) { this.settleFlowAnswer(given); return; }
     this.clearQuestionTimer();
     const current = view.current;
     const presented = current.presented;
     const correct = given === presented.answer;
     const responseMs = given === null
-      ? timeLimitMs(active.config)
+      ? this.currentTimeLimit()
       : Math.max(200, Date.now() - view.questionStartedAt);
 
-    this.updateFact(current, correct, true, responseMs, active.id, 'practice');
+    this.updateFact(current, correct, true, responseMs, active.id, 'practice', presented.kind, given === null);
     active.answered += 1;
     if (correct) active.correct += 1;
     active.records = [...active.records, {
@@ -1369,12 +1396,15 @@ export class App {
     view.input = '';
     view.timedOut = given === null;
     view.phase = correct ? 'right' : 'correction';
-    if (active.fixQueue !== null) {
+    if (active.fixQuestions) {
+      active.fixQuestions = correct ? active.fixQuestions.slice(1) : [...active.fixQuestions.slice(1), active.fixQuestions[0]];
+      active.fixQueue = active.fixQuestions.map(q => q.factKey);
+    } else if (active.fixQueue !== null) {
       active.fixQueue = correct ? active.fixQueue.slice(1) : [...active.fixQueue.slice(1), current.key];
     } else if (correct) {
-      active.retries = active.retries.filter((item) => item.factKey !== current.key);
+      active.retries = active.retries.filter((item) => item.factKey !== current.key || (item.kind ?? 'multiplication') !== presented.kind);
     } else {
-      active.retries = scheduleRetry(active.retries, current.key, active.answered);
+      active.retries = scheduleRetry(active.retries, current.key, active.answered, Math.random, presented.kind);
     }
     if (this.data.settings.soundEnabled) playAnswerSound(correct);
     this.persist();
@@ -1394,7 +1424,7 @@ export class App {
       return;
     }
     const responseMs = Math.max(200, Date.now() - view.questionStartedAt);
-    this.updateFact(current, true, false, responseMs, active.id, 'practice');
+    this.updateFact(current, true, false, responseMs, active.id, 'practice', current.presented.kind);
     view.input = '';
     view.phase = 'corrected';
     if (this.data.settings.soundEnabled) playAnswerSound(true);
@@ -1431,7 +1461,7 @@ export class App {
     const active = this.data.activeSession;
     const view = this.session;
     if (!active || !view || view.phase !== 'answer') return;
-    const limitMs = timeLimitMs(active.config);
+    const limitMs = this.currentTimeLimit();
     if (!limitMs) return;
     const remaining = Math.max(0, limitMs - (Date.now() - view.questionStartedAt));
     this.questionTimer = window.setTimeout(() => {
@@ -1463,15 +1493,304 @@ export class App {
     responseMs: number,
     sessionId: string,
     source: AttemptSource,
+    kind: QuestionKind = 'multiplication',
+    timedOut = false,
   ): void {
     const current = this.data.facts[descriptor.key] ?? newFactProgress(descriptor.key, descriptor.factorA, descriptor.factorB);
-    this.data.facts[descriptor.key] = recordAnswer(current, {
+    const target = operationProgress(current, kind) ?? newFactProgress(descriptor.key, descriptor.factorA, descriptor.factorB);
+    const updated = recordAnswer(target, {
       correct,
       independent,
       responseMs,
       sessionId,
       source,
+      timedOut,
     });
+    this.data.facts[descriptor.key] = kind === 'division' ? { ...current, division: updated } : updated;
+  }
+
+  private nextFlowQuestion(): void {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const view = this.session!;
+    if (flow.stage === 'check') {
+      const item = flow.checkQuestions[active.answered];
+      if (!item) { this.finishCheck(); return; }
+      view.current = factFromQuestion(item);
+      this.openQuestion(view);
+      return;
+    }
+    if (flow.stage === 'warmup') {
+      const key = active.warmUpQueue[0];
+      if (key) {
+        view.warmFact = parseFactKey(key);
+        flow.lesson ??= strategyLesson(key, this.data.facts);
+        view.phase = 'look';
+        view.input = '';
+        view.warmMissed = false;
+        this.persist();
+        return;
+      }
+      flow.stage = 'practice';
+      active.recent = [];
+      for (const [index, key] of flow.taughtKeys.entries()) {
+        if (!active.retries.some(r => r.factKey === key && (r.kind ?? 'multiplication') === 'multiplication')) {
+          active.retries.push({ factKey: key, kind: 'multiplication', dueAfter: index * 2 });
+        }
+      }
+    }
+    if (flow.stage === 'practice') {
+      const pool = practicePool(active.config.tables, this.data.facts);
+      if (flow.practiceRecords.length >= flow.practiceTarget || (!Object.keys(pool).length && !active.retries.length)) {
+        flow.stage = 'application';
+        const keys = [...flow.taughtKeys, ...flow.practiceRecords.filter(r => r.correct).map(r => r.factKey),
+          ...active.records.filter(r => r.correct).map(r => r.factKey)];
+        flow.applicationQuestions = applicationQuestions([...new Set(keys)]);
+        this.nextFlowQuestion();
+        return;
+      }
+      const chosen = choosePracticeFact({ tables: active.config.tables, facts: pool,
+        recent: active.recent, retries: active.retries, answered: flow.practiceRecords.length, allowNew: false });
+      const asDivision = chosen.kind === 'division' || (chosen.reason !== 'retry' && active.config.includeDivision &&
+        (this.data.facts[chosen.key]?.independentCorrect ?? 0) >= 2 && Math.random() < 0.3);
+      view.current = { ...chosen, presented: presentQuestion(chosen.factorA, chosen.factorB, asDivision, randomFlip()) };
+      this.openQuestion(view);
+      return;
+    }
+    if (flow.stage === 'application') {
+      if (flow.applicationAnswered) {
+        flow.applicationIndex += 1;
+        flow.applicationMissed = false;
+        flow.applicationAnswered = false;
+      }
+      if (flow.applicationIndex >= flow.applicationQuestions.length) { this.finishLearning(); return; }
+      view.current = null;
+      view.phase = 'application';
+      view.input = '';
+      view.questionStartedAt = Date.now();
+      this.persist();
+    }
+  }
+
+  private finishCheck(): void {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const result: TestResult = { ...sessionResult(active, null), questions: flow.checkQuestions };
+    this.data.testHistory = [...this.data.testHistory, result].slice(-100);
+    flow.resultId = result.id;
+    if (flow.lessonCount === 0) { this.finishLearning(); return; }
+    const warm = pickWarmUpFacts(active.config.tables, this.data.facts, flow.lessonCount);
+    active.warmUpQueue = warm.map(fact => fact.key);
+    const missed = result.questions.filter(q => result.answers.some(a => a.questionId === q.id && !a.correct));
+    const repairs = [...new Map(missed.map(q => [`${q.factKey}:${q.kind}`, q])).values()];
+    active.retries = repairs.map((q, index) => ({ factKey: q.factKey, kind: q.kind, dueAfter: index * 2 }));
+    flow.practiceTarget = Math.min(12, Math.max(6, warm.length * 2 + repairs.length));
+    flow.stage = 'warmup';
+    this.nextFlowQuestion();
+    this.persist();
+  }
+
+  private settleFlowAnswer(given: number | null): void {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const view = this.session!;
+    const current = view.current!;
+    const presented = current.presented;
+    const checking = flow.stage === 'check';
+    this.clearQuestionTimer();
+    const correct = given === presented.answer;
+    const responseMs = given === null ? this.currentTimeLimit() : Math.max(200, Date.now() - view.questionStartedAt);
+    this.updateFact(current, correct, true, responseMs, active.id, checking ? 'test' : 'practice', presented.kind, given === null);
+    const record: SessionRecord = {
+      id: checking ? flow.checkQuestions[active.answered].id : `${active.id}-practice-${flow.practiceRecords.length}`,
+      factKey: current.key, ...presented, given, correct, responseMs,
+    };
+    if (checking) {
+      active.records.push(record);
+      active.answered += 1;
+      if (correct) active.correct += 1;
+      // Feedback is neutral during assessment. In particular, errors do not reveal the answer.
+      view.phase = 'recorded';
+      this.afterFeedback(400, () => this.advanceSession());
+    } else {
+      flow.practiceRecords.push(record);
+      active.recent = [...active.recent, current.key].slice(-10);
+      if (correct) {
+        active.retries = active.retries.filter(r => r.factKey !== current.key || (r.kind ?? 'multiplication') !== presented.kind);
+        view.phase = 'right';
+        this.afterFeedback(480, () => this.advanceSession());
+      } else {
+        active.retries = scheduleRetry(active.retries, current.key, flow.practiceRecords.length, Math.random, presented.kind);
+        view.phase = 'correction';
+      }
+      if (this.data.settings.soundEnabled) playAnswerSound(correct);
+    }
+    view.input = '';
+    view.timedOut = given === null;
+    this.persist();
+    this.render();
+  }
+
+  private submitStrategyStep(answer: number): void {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const view = this.session!;
+    const lesson = flow.lesson!;
+    const step = lesson.steps[flow.lessonStep];
+    if (answer !== step.answer) {
+      view.warmMissed = true;
+      view.input = '';
+      this.render();
+      return;
+    }
+    flow.lessonStep += 1;
+    view.input = '';
+    view.warmMissed = false;
+    if (flow.lessonStep >= lesson.steps.length) {
+      const fact = view.warmFact!;
+      this.updateFact(fact, true, false, Math.max(200, Date.now() - view.questionStartedAt), active.id, 'learn');
+      flow.taughtKeys.push(fact.key);
+      flow.lessonStep = 0;
+      flow.lesson = undefined;
+      active.warmUpQueue.shift();
+      this.nextFlowQuestion();
+    }
+    this.persist();
+    this.render();
+  }
+
+  private submitApplication(answer: number): void {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const view = this.session!;
+    const item = flow.applicationQuestions[flow.applicationIndex];
+    if (answer !== item.answer) {
+      flow.applicationMissed = true;
+      view.input = '';
+      this.persist();
+      this.render();
+      return;
+    }
+    if (!flow.applicationMissed) flow.applicationCorrect += 1;
+    flow.applicationAnswered = true;
+    view.phase = 'application-right';
+    view.input = String(answer);
+    this.persist();
+    this.afterFeedback(650, () => {
+      this.nextQuestion();
+      this.persist();
+      this.render();
+    });
+    this.render();
+  }
+
+  private finishLearning(): void {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const saved = this.data.testHistory.find(result => result.id === flow.resultId);
+    if (!saved) { this.goHome(); return; }
+    const result = flow.lessonCount > 0 ? { ...saved, learning: {
+      taught: flow.taughtKeys.length,
+      practiceCorrect: flow.practiceRecords.filter(r => r.correct).length,
+      practiceAnswered: flow.practiceRecords.length,
+      applicationCorrect: flow.applicationCorrect,
+      applicationAnswered: flow.applicationIndex + (flow.applicationAnswered ? 1 : 0),
+      finishedAt: Date.now(),
+    } } : saved;
+    this.data.testHistory = this.data.testHistory.map(r => r.id === result.id ? result : r);
+    this.clearSessionTimers();
+    this.data.activeSession = null;
+    this.latestResult = result;
+    this.session = null;
+    this.screen = 'result';
+    this.persist();
+  }
+
+  private currentTimeLimit(): number {
+    const active = this.data.activeSession;
+    if (!active || active.fixQueue !== null) return 0;
+    if (active.flow) {
+      if (active.flow.stage !== 'check') return 0;
+      return (this.session?.current?.presented.timeLimitSeconds ?? 0) * 1000;
+    }
+    return timeLimitMs(active.config);
+  }
+
+  private renderStrategyVisual(lesson: StrategyLesson): string {
+    return `<div class="strategy-array" style="--columns:${lesson.columns}" aria-label="${lesson.rows} rows of ${lesson.columns}">
+      ${Array.from({ length: lesson.rows * lesson.columns }, (_, index) =>
+        `<b class="${lesson.splitAfter !== undefined && index % lesson.columns >= lesson.splitAfter ? 'second-part' : ''}"></b>`).join('')}
+    </div>`;
+  }
+
+  private renderStrategyLesson(view: SessionView): string {
+    const active = this.data.activeSession!;
+    const flow = active.flow!;
+    const fact = view.warmFact!;
+    const lesson = flow.lesson!;
+    if (view.phase === 'look') {
+      return `<main class="child-shell learn-shell">
+        ${this.renderChildHeader('Learn a useful trick', 'session-exit')}
+        <section class="lesson-stage">
+          <p class="eyebrow">${fact.factorA} × ${fact.factorB}</p>
+          <h1>${escapeHtml(lesson.title)}</h1>
+          <div class="fact-visual-wrap">${this.renderStrategyVisual(lesson)}</div>
+          <p class="lesson-short">${escapeHtml(lesson.explanation)}</p>
+          <p class="lesson-equation">${escapeHtml(lesson.equation)}</p>
+          ${this.listenButton()}
+        </section>
+        <footer class="lesson-footer"><button class="primary-button learn-button" type="button" data-action="warmup-try">Try it ${icon('chevron-right')}</button></footer>
+      </main>`;
+    }
+    const step = lesson.steps[flow.lessonStep];
+    return `<main class="child-shell learn-shell question-shell strategy-shell">
+      ${this.renderChildHeader('Try the steps', 'session-exit')}
+      <div class="child-progress"><span>Step ${flow.lessonStep + 1} / ${lesson.steps.length}</span></div>
+      <section class="question-stage">
+        <p class="strategy-prompt">${escapeHtml(step.prompt)}</p>
+        ${flow.lessonStep === 0 ? `<div class="compact-visual">${this.renderStrategyVisual(lesson)}</div>` : ''}
+        ${view.warmMissed ? `<p class="correction-copy" role="status">${escapeHtml(step.expression)} = ${step.answer}. Type ${step.answer}, then try the next step.</p>` : ''}
+        <div class="equation equation-small"><span>${escapeHtml(step.expression)}</span><span>=</span><output aria-label="Your answer">${view.input || '?'}</output></div>
+      </section>
+      ${renderKeypad(view.input)}
+    </main>`;
+  }
+
+  private renderApplication(active: ActiveSession, view: SessionView): string {
+    const flow = active.flow!;
+    const item = flow.applicationQuestions[flow.applicationIndex];
+    if (!item) return this.renderHome();
+    const answered = view.phase === 'application-right';
+    return `<main class="child-shell practice-shell question-shell application-shell">
+      ${this.renderChildHeader('Use what you know', 'session-exit')}
+      <div class="child-progress"><span>Puzzle ${flow.applicationIndex + 1} / ${flow.applicationQuestions.length}</span></div>
+      <section class="question-stage">
+        <p class="application-prompt">${escapeHtml(item.prompt)}</p>
+        ${this.listenButton()}
+        ${flow.applicationMissed ? `<p class="application-help" role="status">${escapeHtml(item.help)}</p>` : ''}
+        <div class="equation equation-small"><span>${escapeHtml(item.expression)}</span><output aria-label="Your answer">${view.input || '?'}</output></div>
+        ${answered ? '<p class="answer-feedback right-feedback">Yes — you used the idea</p>' : ''}
+      </section>
+      ${renderKeypad(view.input, answered)}
+    </main>`;
+  }
+
+  private listenButton(): string {
+    return 'speechSynthesis' in window && speechSynthesis.getVoices().some(voice => voice.localService && voice.lang.startsWith('en'))
+      ? '<button class="listen-button" type="button" data-action="speak-question">Listen</button>' : '';
+  }
+
+  private speakQuestion(): void {
+    if (!('speechSynthesis' in window)) return;
+    const flow = this.data.activeSession?.flow;
+    const text = flow?.stage === 'application' ? flow.applicationQuestions[flow.applicationIndex]?.prompt : flow?.lesson?.explanation;
+    const voice = speechSynthesis.getVoices().find(v => v.localService && v.lang.startsWith('en'));
+    if (!text || !voice) return;
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.replaceAll('×', ' times ').replaceAll('÷', ' divided by '));
+    utterance.voice = voice;
+    utterance.rate = 0.85;
+    speechSynthesis.speak(utterance);
   }
 
   // --- Settings -------------------------------------------------------------
@@ -1609,11 +1928,6 @@ export class App {
     return first.length === second.length && second.every((table) => first.includes(table));
   }
 
-  private formatStability(hours: number): string {
-    if (hours < 1) return `${Math.round(hours * 60)} min`;
-    if (hours < 48) return `${Math.round(hours)} hours`;
-    return `${Math.round(hours / 24)} days`;
-  }
 
   private afterFeedback(delay: number, callback: () => void): void {
     this.clearTransition();
@@ -1740,3 +2054,4 @@ export class App {
     return `${prefix}-${crypto.randomUUID()}`;
   }
 }
+

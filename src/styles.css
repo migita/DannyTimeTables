@@ -2288,3 +2288,43 @@ p {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Teaching stays readable on a small phone, with the mathematical parts grouped by colour. */
+.strategy-array {
+  display: grid;
+  grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
+  gap: 5px;
+  width: min(250px, 64vw);
+  margin: 0 auto;
+}
+.strategy-array b {
+  width: 100%;
+  aspect-ratio: 1;
+  max-height: 22px;
+  border-radius: 50%;
+  background: #267d74;
+}
+.strategy-array b.second-part { background: #dc9851; }
+.strategy-shell .compact-visual .strategy-array { width: min(150px, 40vw); gap: 3px; }
+.strategy-prompt, .application-prompt {
+  max-width: 32rem;
+  margin: 0 auto 16px;
+  font-size: clamp(1.1rem, 4.7vw, 1.45rem);
+  line-height: 1.4;
+  text-align: center;
+}
+.check-caption { max-width: 28rem; font-size: .95rem; line-height: 1.4; color: #63716b; text-align: center; margin: 0 auto 20px; }
+.application-help { background: #edf5ed; padding: 12px; border-radius: 12px; line-height: 1.45; font-size: 1rem; }
+.application-shell .equation { flex-wrap: wrap; gap: 10px; }
+.application-shell .equation > span { font-size: clamp(1.4rem, 6vw, 2rem); }
+.neutral-feedback { color: #54665e; }
+.listen-button { border: 1px solid #b9c9bf; border-radius: 20px; padding: 8px 18px; margin: 0 auto 10px; background: #fff; color: #295b48; font: inherit; }
+.learning-summary { padding: 18px; margin: 16px 0; border-radius: 16px; background: #f0f5ef; }
+.learning-summary h2 { margin: 0 0 8px; font-size: 1.15rem; }
+.learning-summary p { margin: 7px 0; line-height: 1.45; }
+.learning-summary small { color: #54665e; }
+@media (max-height: 700px) {
+  .strategy-prompt, .application-prompt { font-size: 1rem; margin-bottom: 8px; }
+  .strategy-shell .compact-visual .strategy-array { width: 100px; gap: 2px; }
+  .check-caption { margin-bottom: 8px; font-size: .85rem; }
+}

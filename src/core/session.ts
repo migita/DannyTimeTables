@@ -22,6 +22,7 @@ export function timeLimitMs(config: Pick<TestConfig, 'timeLimitSeconds'>): numbe
 }
 
 export interface PresentedQuestion {
+  timeLimitSeconds?: number;
   kind: QuestionKind;
   left: number;
   right: number;
@@ -66,7 +67,8 @@ export function sessionResult(
     config: session.config,
     startedAt: session.startedAt,
     finishedAt: now,
-    status: status ?? (session.correct >= requiredCorrect(session.config) ? 'passed' : 'failed'),
+    assessment: session.flow?.assessment ?? 'legacy',
+    status: status ?? (session.flow?.assessment === 'placement' ? 'completed' : session.correct >= requiredCorrect(session.config) ? 'passed' : 'failed'),
     correct: session.correct,
     answered: session.answered,
     answers: session.records.map((record) => ({
@@ -87,3 +89,4 @@ export function sessionResult(
     })),
   };
 }
+

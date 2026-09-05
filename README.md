@@ -28,10 +28,15 @@ npm run test:e2e
 
 One child-facing flow, started with a single **Start** button:
 
-- **Warm-up** (off, 2, 3 or 5 facts) shows the facts most in need — new ones first, then shaky ones — with a visual explanation (groups, arrays, doubles, fives, tens), typed once with guidance. A guided answer never counts as mastery.
-- **Questions** are a scored session (10/20/30/50 questions, configurable pass mark, optional related division) drawn from the adaptive scheduler: new facts arrive steadily, a fact never repeats within eight questions unless it was missed, and a missed fact returns 3–5 questions later after a retype correction. The score counts first answers only and ends in **PASS / NOT YET**, with a "Fix the misses" follow-up round.
-- **Time per question** (off, 3, 6 or 10 s) adds a draining countdown under each scored question. Running out of time counts as a miss: it is corrected like any other, scheduled for retry, and shown with a clock in the missed list. Warm-up and fix-the-misses rounds are never timed, and the clock pauses while the app is hidden or the end-session prompt is open.
-- **Grown-ups** can choose any tables from 1–12 (settings drive every session), inspect fact-level history, export/import a versioned backup, and reset local data.
+- **Check first:** a fixed, balanced set of previously taught facts, before hints, corrections or teaching. Its first answers alone determine the pass score. A new learner gets a short, untimed **starting check** with no pass/fail judgment while the app identifies a starting point.
+- **Learn:** one or two facts by default, using a known double, an easier multiplication plus another group, or equal-group construction. Coloured arrays connect the steps to the mathematics. Each short lesson asks the child to complete intermediate steps and then the target fact; those answers remain guided evidence.
+- **Practice:** a short, untimed adaptive round using taught facts and missed questions. Corrections return later with the same operation: a division miss must be answered as division.
+- **Use what you know:** a missing-factor puzzle and a short contextual problem. Application results are separate from the check score.
+- **Grown-ups** retain their selected tables, check length, pass mark, timing and division settings. Set **Teaching facts → Off** for just the check. New installations start with 2, 5 and 10; existing choices are preserved.
+
+“Secure” requires successful unprompted recalls on later days, including a gap of at least three days and evidence spanning multiple days. Repeated same-day sessions cannot establish it. Progress displays observed retention rather than a claimed probability. Multiplication and related division retain separate records; timeouts are separate from wrong answers. Selected timing applies only to established facts in the check; all learning remains untimed.
+
+Listen buttons use an installed English voice when one is available, so reading can be supported without an online tutor. The app remains static and offline-first.
 
 The memory model and test generator are pure TypeScript modules under [`src/core`](src/core). The browser interface is kept in [`src/app.ts`](src/app.ts), and local persistence is isolated in [`src/core/storage.ts`](src/core/storage.ts).
 
@@ -72,3 +77,4 @@ The repository includes CI and Pages workflows. After pushing to GitHub:
 3. Run the **Deploy GitHub Pages** workflow, or push to `main`.
 
 All asset paths are relative, so project Pages URLs work without repository-specific build configuration.
+

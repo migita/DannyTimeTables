@@ -1,4 +1,4 @@
-const CACHE_NAME = 'danny-times-v3';
+const CACHE_NAME = 'danny-times-3.0.0';
 const BASE = new URL('./', self.location.href);
 const APP_SHELL = [
   BASE.href,
@@ -30,7 +30,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith('danny-times-') && key !== CACHE_NAME).map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
 });

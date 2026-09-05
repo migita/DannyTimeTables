@@ -23,7 +23,7 @@ export function defaultSessionConfig(): SessionConfig {
     passMode: 'count',
     passValue: 18,
     includeDivision: false,
-    warmUpCount: 3,
+    warmUpCount: 2,
     timeLimitSeconds: 0,
   };
 }
@@ -56,7 +56,7 @@ export function createDefaultData(): AppData {
   return {
     version: DATA_VERSION,
     settings: {
-      activeTables: [...ALL_TABLES],
+      activeTables: [2, 5, 10],
       session: defaultSessionConfig(),
       soundEnabled: false,
     },
@@ -254,3 +254,4 @@ function validActiveSession(value: unknown): value is ActiveSession {
     Number.isFinite(value.correct)
   );
 }
+

@@ -3,8 +3,8 @@ import { ALL_TABLES, CORE_TABLES } from '../src/core/facts';
 import { createDefaultData, ensureSettings, exportData, importData } from '../src/core/storage';
 
 describe('versioned storage', () => {
-  it('starts new learners with every table available', () => {
-    expect(createDefaultData().settings.activeTables).toEqual(ALL_TABLES);
+  it('starts new learners with the Year 2 tables', () => {
+    expect(createDefaultData().settings.activeTables).toEqual([2, 5, 10]);
   });
 
   it('round-trips all settings and progress', () => {
@@ -41,7 +41,7 @@ describe('versioned storage', () => {
       passMode: 'count',
       passValue: 17,
       includeDivision: false,
-      warmUpCount: 3,
+      warmUpCount: 2,
       timeLimitSeconds: 0,
     });
     expect(imported.settings.activeTables).toEqual([2, 3, 4, 5, 10]);
@@ -101,7 +101,7 @@ describe('versioned storage', () => {
     expect(settings.activeTables).toEqual([2, 5]);
     expect(settings.soundEnabled).toBe(true);
     expect(settings.session.questionCount).toBe(20);
-    expect(settings.session.warmUpCount).toBe(3);
+    expect(settings.session.warmUpCount).toBe(2);
     expect(settings.session.timeLimitSeconds).toBe(0);
   });
 
